@@ -3,7 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 
 namespace Apos.Shapes {
     // A linearGradient or radialGradient as it was written. Attributes stay unresolved because

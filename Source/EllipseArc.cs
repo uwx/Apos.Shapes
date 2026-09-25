@@ -1,6 +1,11 @@
 using System;
+#if !NFMW
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+#endif
+#if NFMW
+using NFMWorld.Graphics;
+#endif
 
 namespace Apos.Shapes {
     /// <summary>
@@ -56,6 +61,16 @@ namespace Apos.Shapes {
         /// frame hitch. See Tools/EllipseArcGen, which produces the file and carries the math and
         /// its reasoning.
         /// </summary>
+#if NFMW
+        public static ITexture CreateTexture(IGraphicsDevice device) {
+            using var stream = typeof(EllipseArc).Assembly.GetManifestResourceStream("Apos.Shapes.ellipse-arc.lut")
+                ?? throw new InvalidOperationException("Missing embedded resource \"Apos.Shapes.ellipse-arc.lut\".");
+            byte[] bytes = new byte[Width * Height * 4];
+            stream.ReadExactly(bytes);
+
+            return device.CreateTexture(new TextureDesc(Width, Height, TextureFormat.Rgba8), bytes);
+        }
+#else
         public static Texture2D CreateTexture(GraphicsDevice graphicsDevice) {
             using var stream = typeof(EllipseArc).Assembly.GetManifestResourceStream("Apos.Shapes.ellipse-arc.lut")
                 ?? throw new InvalidOperationException("Missing embedded resource \"Apos.Shapes.ellipse-arc.lut\".");
@@ -66,5 +81,6 @@ namespace Apos.Shapes {
             texture.SetData(bytes);
             return texture;
         }
+#endif
     }
 }

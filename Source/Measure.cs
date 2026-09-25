@@ -1,7 +1,8 @@
 using System;
 using System.Buffers;
+#if !NFMW
 using Microsoft.Xna.Framework;
-using MonoGame.Extended;
+#endif
 
 namespace Apos.Shapes {
     /// <summary>

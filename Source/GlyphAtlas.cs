@@ -1,8 +1,24 @@
 // The two textures a GlyphTable's arenas mirror into.
 
 using System;
+#if !NFMW
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+#endif
+#if NFMW
+using System.Collections.Generic;
+using NFMWorld.Graphics;
+
+/// <summary>
+/// One partial row upload that could not be made when it was produced, because no command buffer
+/// was live. See <see cref="Apos.Shapes.GlyphAtlas.Sync"/>.
+/// </summary>
+/// <param name="Texture">The texture the rows belong to.</param>
+/// <param name="Y">First row, in texels.</param>
+/// <param name="Rows">How many rows.</param>
+/// <param name="Data">The rows' bytes, already converted to the texture's format.</param>
+internal readonly record struct GlyphUpload(ITexture Texture, int Y, int Rows, byte[] Data);
+#endif
 
 namespace Apos.Shapes {
     // Brings the band and curve textures up to date with a table's arenas. Everything above
@@ -17,6 +33,24 @@ namespace Apos.Shapes {
     // repacks to RGBA8 instead. See GlyphRepack for the encodings and apos-shapes.fx for the
     // matching decode.
     internal sealed class GlyphAtlas : IDisposable {
+#if NFMW
+        internal ITexture? Band;
+        internal ITexture? Curve;
+
+        /// <param name="device">The device to build the textures with.</param>
+        /// <param name="cb">
+        /// The frame's command buffer. Partial-row uploads go through it rather than the device
+        /// because <see cref="ITexture"/> has no update entry point of its own.
+        /// </param>
+        /// <param name="table">The baked glyph table to mirror.</param>
+        /// <param name="pending">
+        /// Collects rows written while no command buffer was live, for the next frame to send.
+        /// </param>
+        internal void Upload(IGraphicsDevice device, ICommandBuffer? cb, GlyphTable table, List<GlyphUpload> pending) {
+            Band = Sync(device, cb, Band, table.Band, pending);
+            Curve = Sync(device, cb, Curve, table.Curve, pending);
+        }
+#else
         internal Texture2D? Band;
         internal Texture2D? Curve;
 
@@ -31,7 +65,47 @@ namespace Apos.Shapes {
             Band = Sync(graphicsDevice, Band, table.Band);
             Curve = Sync(graphicsDevice, Curve, table.Curve);
         }
+#endif
 
+#if NFMW
+        // Growth rebuilds the texture and refills it whole, which keeps every already seated
+        // texel index valid. Otherwise only the rows written since the last upload go up.
+        //
+        // An arena holds its texels as floats, and the texture wants them as bytes, so the two
+        // differ in width. Growths convert and send the whole thing; the incremental rows
+        // convert just their own span out of the middle of the arena.
+        //
+        // The bytes are built here rather than pointed at, because a command buffer does not
+        // keep the span it is handed. A settled working set uploads nothing, so the allocation
+        // only happens on the flushes that actually move rows.
+        private static ITexture? Sync(IGraphicsDevice device, ICommandBuffer? cb, ITexture? texture, TexelArena arena, List<GlyphUpload> pending) {
+            if (arena.Rows == 0) return texture;
+            if (texture == null || arena.Grew) {
+                texture?.Dispose();
+                texture = device.CreateTexture(new TextureDesc(arena.Width, arena.Rows, TextureFormat.Rgba32f));
+            }
+            if (arena.DirtyTo > arena.DirtyFrom) {
+                // A texture takes whole rows, so a write that starts or ends mid row rounds out
+                // to the rows it touched.
+                int y = arena.DirtyFrom / arena.Width;
+                int rows = (arena.DirtyTo + arena.Width - 1) / arena.Width - y;
+                int floats = rows * arena.Width * 4;
+                byte[] bytes = new byte[floats * sizeof(float)];
+                Buffer.BlockCopy(arena.Data, y * arena.Width * 4 * sizeof(float), bytes, 0, floats * sizeof(float));
+                if (cb != null) {
+                    cb.UpdateTexture(texture, 0, y, arena.Width, rows, bytes);
+                } else {
+                    // Rasterized outside a frame. The rows have to be kept as a copy, because
+                    // the arena goes on marking itself uploaded and will not offer them again.
+                    pending.Add(new GlyphUpload(texture, y, rows, bytes));
+                }
+            }
+            arena.Uploaded();
+            return texture;
+        }
+#endif
+
+#if !NFMW
         // Growth rebuilds the texture and refills it whole, which keeps every already seated
         // texel index valid. Otherwise only the rows written since the last upload go up.
         private static Texture2D? Sync(GraphicsDevice graphicsDevice, Texture2D? texture, TexelArena arena) {
@@ -111,6 +185,7 @@ namespace Apos.Shapes {
             arena.Uploaded();
             return texture;
         }
+#endif
 #endif
 
         public void Dispose() {

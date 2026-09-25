@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Xml;
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 
 namespace Apos.Shapes {
     /// <summary>

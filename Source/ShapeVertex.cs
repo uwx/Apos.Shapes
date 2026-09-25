@@ -1,8 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+#if !NFMW
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+#endif
+#if NFMW
+using NFMWorld.Shaders;
+#endif
 
 namespace Apos.Shapes {
     /// <summary>
@@ -13,7 +18,11 @@ namespace Apos.Shapes {
     /// and expect it to move between versions.
     /// </summary>
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct VertexShape : IVertexType {
+    public struct VertexShape
+#if !NFMW
+        : IVertexType
+#endif
+    {
         /// <param name="position">Where this corner sits, in world units.</param>
         /// <param name="textureCoordinate">The corner's position in the shape's own frame, which is what the distance field is evaluated at.</param>
         /// <param name="shape">Which distance field the pixel shader runs.</param>
@@ -239,10 +248,36 @@ namespace Apos.Shapes {
         public float ClipRounding;
         /// <summary>Antialiasing band width of the clip edge in pixels. 0 gives a hard scissor edge.</summary>
         public float ClipAaSize;
+#if NFMW
+        /// <summary>
+        /// Layout of this vertex, for the vertex buffer. This is the NFMWorld.Graphics form of the
+        /// XNA <c>VertexDeclaration</c> below: same thirteen attributes, same byte offsets, same
+        /// 164 byte stride.
+        /// </summary>
+        public static readonly VertexLayoutDesc VertexLayout = new(
+            Attributes:
+            [
+                new VertexAttributeDesc("POSITION",  0,   0, VertexAttributeFormat.Float3),            // Position
+                new VertexAttributeDesc("TEXCOORD",  0,  12, VertexAttributeFormat.Float4),            // TextureCoordinate
+                new VertexAttributeDesc("TEXCOORD",  1,  28, VertexAttributeFormat.Short4Normalized),  // FillA
+                new VertexAttributeDesc("TEXCOORD",  2,  36, VertexAttributeFormat.Short4Normalized),  // FillB
+                new VertexAttributeDesc("TEXCOORD",  3,  44, VertexAttributeFormat.Short4Normalized),  // BorderA
+                new VertexAttributeDesc("TEXCOORD",  4,  52, VertexAttributeFormat.Short4Normalized),  // BorderB
+                new VertexAttributeDesc("TEXCOORD",  5,  60, VertexAttributeFormat.Float4),            // FillCoord
+                new VertexAttributeDesc("TEXCOORD",  6,  76, VertexAttributeFormat.Float4),            // BorderCoord
+                new VertexAttributeDesc("TEXCOORD",  7,  92, VertexAttributeFormat.Float4),            // Meta1
+                new VertexAttributeDesc("TEXCOORD",  8, 108, VertexAttributeFormat.Float4),            // Meta2
+                new VertexAttributeDesc("TEXCOORD",  9, 124, VertexAttributeFormat.Float4),            // Meta3
+                new VertexAttributeDesc("POSITION",  1, 140, VertexAttributeFormat.Float4),            // ClipDistances
+                new VertexAttributeDesc("NORMAL",    0, 156, VertexAttributeFormat.Float2),            // ClipRounding, ClipAaSize
+            ],
+            StrideInBytes: 164);
+#else
         /// <summary>Layout of this vertex, for the vertex buffer.</summary>
         public static readonly VertexDeclaration VertexDeclaration;
 
         readonly VertexDeclaration IVertexType.VertexDeclaration => VertexDeclaration;
+#endif
 
         /// <summary>A hash over every packed field.</summary>
         /// <returns>The hash code.</returns>
@@ -346,6 +381,7 @@ namespace Apos.Shapes {
             EvenOdd = 14
         }
 
+#if !NFMW
         static VertexShape() {
             int offset = 0;
             var elements = new VertexElement[] {
@@ -387,6 +423,7 @@ namespace Apos.Shapes {
             [VertexElementFormat.HalfVector2] = 4,
             [VertexElementFormat.HalfVector4] = 8,
         };
+#endif
 
         // The shape uses 4 bits, gradient shapes 4 bits each, repeat styles 2 bits each, the color
         // space 2 bits, the dash type 2 bits and the blur flag 1 bit. The total stays under 2^21 so
@@ -492,13 +529,23 @@ namespace Apos.Shapes {
             for (int i = 0; i < 256; i++) table[i] = (ushort)PackChannel(i / 255f);
             return table;
         }
+#if NFMW
+        // XNA's Color.PackedValue, which Maxine.Extensions.Mathematics' Color does not carry.
+        // The channels are the same four bytes, so the value is the same 32 bits in the same
+        // order; only the two caches above read it, and only as a hash key, so nothing depends
+        // on the packing beyond two equal colors hashing equal.
+        private static uint PackedValue(Color c) => (uint)(c.R | c.G << 8 | c.B << 16 | c.A << 24);
+#else
+        private static uint PackedValue(Color c) => c.PackedValue;
+#endif
+
         private static ulong PackOklab(Color c) {
             // Every vertex of a shape packs the same colors, and a batch usually draws long
             // runs in one of them, so the conversion is worth remembering: it costs three
             // cbrt and would otherwise run sixteen times per quad.
-            ulong key = c.PackedValue;
+            ulong key = PackedValue(c);
             ulong[] cache = _oklabCache ??= NewOklabCache();
-            int slot = Slot(c.PackedValue, OklabSlots);
+            int slot = Slot((uint)key, OklabSlots);
             if (cache[slot * 2] == key) {
                 return cache[slot * 2 + 1];
             }
@@ -512,9 +559,9 @@ namespace Apos.Shapes {
         }
         private static (ulong, ulong) PackOklchPair(Color a, Color b) {
             // Same idea as PackOklab, keyed on the stop pair since the hue fixup couples them.
-            ulong key = (ulong)a.PackedValue << 32 | b.PackedValue;
+            ulong key = (ulong)PackedValue(a) << 32 | PackedValue(b);
             ulong[] cache = _oklchCache ??= new ulong[OklchSlots * 3];
-            int slot = Slot(a.PackedValue ^ b.PackedValue, OklchSlots);
+            int slot = Slot((uint)(PackedValue(a) ^ PackedValue(b)), OklchSlots);
             if (cache[slot * 3] == key && (_oklchValid & 1ul << slot) != 0) {
                 return (cache[slot * 3 + 1], cache[slot * 3 + 2]);
             }

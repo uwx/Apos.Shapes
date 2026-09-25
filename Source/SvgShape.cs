@@ -1,7 +1,9 @@
 // One drawable out of an SVG, baked and ready for a quad.
 
 using System;
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 
 namespace Apos.Shapes {
     // A single element's fill and stroke, in the em frame ShapeSvg normalizes the document into.

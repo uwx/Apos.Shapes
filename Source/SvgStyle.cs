@@ -2,7 +2,9 @@
 
 using System;
 using System.Collections.Generic;
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 using System.Xml;
 
 namespace Apos.Shapes {

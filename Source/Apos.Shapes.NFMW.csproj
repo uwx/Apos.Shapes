@@ -1,0 +1,102 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net11.0</TargetFrameworks>
+
+    <PackageId>Apos.Shapes</PackageId>
+    <Description>Shape rendering in MonoGame.</Description>
+    <PackageTags>gamedev;monogame;shapes</PackageTags>
+
+    <Authors>Jean-David Moisan</Authors>
+    <Copyright>Copyright 2026</Copyright>
+
+    <RepositoryUrl>https://github.com/Apostolique/Apos.Shapes</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Apostolique/Apos.Shapes</PackageProjectUrl>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <RepositoryType>git</RepositoryType>
+
+    <PackageIcon>Icon.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Nullable>enable</Nullable>
+    <!-- The glyph baker reads outlines through stb_truetype, whose interface is pointers. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    
+    <DefineConstants>NFMW</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reads the glyph outlines the shader solves. -->
+    <PackageReference Include="StbTrueTypeSharp" Version="1.26.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The GPU smoke test drives the internal glyph path directly; nothing else sees inside. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>SlugSmoke</_Parameter1>
+    </AssemblyAttribute>
+    <!-- The SVG ground truth reads the baked elements a document loads into. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>SvgTruth</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../Images/Icon.png" Pack="true" PackagePath="" />
+    <None Include="../LICENSE" Pack="true" PackagePath="" />
+    <None Include="../THIRD_PARTY_NOTICES.md" Pack="true" PackagePath="" />
+    <None Include="$(BaseIntermediateOutputPath)README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Content/ellipse-arc.lut" LogicalName="Apos.Shapes.ellipse-arc.lut" Visible="false" />
+  </ItemGroup>
+
+  <!-- The shader is compiled by the repo's own compiler rather than the upstream ShadowDuskCLI
+       .mgfx target: this build renders through NFMWorld.Graphics, whose backends consume
+       ShaderStageSources (SPIR-V, HLSL, MSL, GLSL, GLSL-ES and GLSL-330 per stage) plus a
+       ShaderReflection, which is what that compiler emits and what an .mgfx blob is not.
+
+       The shader directory is this project's own Content/ rather than nfm-world's data/shaders,
+       so the .fx lives beside the library that uses it and the bundle lands in this project's
+       obj/. That also decides the last open question: bundles are emitted `internal` into
+       NFMWorld.Shaders.Generated, so a copy in nfm-world's obj/ would be unreachable from this
+       assembly, whereas one compiled here is compiled into this assembly. -->
+  <PropertyGroup>
+    <NFMWorldShadersDirectory>$(MSBuildProjectDirectory)\Content</NFMWorldShadersDirectory>
+  </PropertyGroup>
+
+  <Import Project="..\..\NFMWorld.ShaderCompiler.Task\NFMWorld.ShaderCompiler.targets" />
+
+  <!-- The packed copy of the readme needs absolute image URLs: nuget.org only renders
+       images from trusted hosts and can't resolve repo-relative paths. -->
+  <Target Name="PrepareNuGetReadme" BeforeTargets="GenerateNuspec">
+    <MakeDir Directories="$(BaseIntermediateOutputPath)" />
+    <PropertyGroup>
+      <!-- '%' and ';' are MSBuild-escaped so WriteLinesToFile keeps them literal. -->
+      <_NuGetReadme>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/../README.md').Replace('](./Images/', '](https://raw.githubusercontent.com/Apostolique/Apos.Shapes/main/Images/').Replace('%', '%25').Replace(';', '%3B'))</_NuGetReadme>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(BaseIntermediateOutputPath)README.md" Lines="$(_NuGetReadme)" Overwrite="true" />
+  </Target>
+
+  <ItemGroup>
+    <SourceRoot Include="$(MSBuildThisFileDirectory)/" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\NFMWorld.Graphics.Abstraction\NFMWorld.Graphics.Abstraction.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+</Project>

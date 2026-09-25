@@ -1,15 +1,23 @@
 ﻿using System;
 using System.Collections.Generic;
+#if NFMW
+using System.Runtime.InteropServices;
+#endif
+#if !NFMW
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Content;
 using Microsoft.Xna.Framework.Graphics;
-using MonoGame.Extended;
+#else
+using NFMWorld.Graphics;
+using NFMWorld.Shaders;
+using NFMWorld.Shaders.Generated;
+#endif
 
 namespace Apos.Shapes {
     /// <summary>
     /// Draws anti-aliased shapes, text and textures on the GPU. Shapes come from signed distance
     /// fields, so they stay crisp at any zoom and cost one quad each no matter how round they are.
-    /// Draw between <see cref="Begin"/> and <see cref="End"/>, the way a SpriteBatch works. Shapes,
+    /// Draw between <c>Begin</c> and <see cref="End"/>, the way a SpriteBatch works. Shapes,
     /// text and textures can be interleaved in any order and still render as one batch.
     /// Every shape comes in three flavors: <c>Fill</c> for the inside, <c>Border</c> for the
     /// outline, and <c>Draw</c> for both at once with a color each. Anywhere one takes a Color it
@@ -17,6 +25,69 @@ namespace Apos.Shapes {
     /// This needs the <c>HiDef</c> profile, or <c>FL10_0</c> on KNI.
     /// </summary>
     public class ShapeBatch : IDisposable {
+#if NFMW
+        /// <param name="device">The device to draw with.</param>
+        /// <param name="warmup">
+        /// Runs <see cref="Warmup"/> so the driver compiles the shader as early as possible. You
+        /// can pass false if something is already on screen when the batch gets built.
+        /// </param>
+        /// <remarks>
+        /// The shader is fixed: it is compiled into this assembly by the build and there is no
+        /// embedded bytecode to swap, so the <c>effect</c> argument the XNA builds take has no
+        /// counterpart here.
+        /// </remarks>
+        public ShapeBatch(IGraphicsDevice device, bool warmup = true) {
+            _device = device;
+
+            _vertices = new VertexShape[_initialVertices];
+            _indices = new uint[_initialIndices];
+
+            GenerateIndexArray();
+
+            _vertexBuffer = device.CreateBuffer(new BufferDesc(BufferKind.Vertex, BufferUsage.Dynamic, _vertices.Length * VertexStride));
+            _indexBuffer = device.CreateBuffer(new BufferDesc(BufferKind.Index, BufferUsage.Dynamic, _indices.Length * sizeof(uint), IndexFormat.UInt32), MemoryMarshal.AsBytes(_indices.AsSpan()));
+
+            var program = apos_shapesSpriteBatch.Create();
+            _shaderModule = device.CreateShaderModule(program.Vertex, program.Pixel, program.Reflection);
+            _pipeline = device.CreatePipeline(new PipelineDesc(
+                VertexShader: _shaderModule,
+                PixelShader: _shaderModule,
+                VertexLayouts: new[] { VertexShape.VertexLayout },
+                // Premultiplied, because that is what this shader emits: SpritePixelShader multiplies
+                // rgb by a before it returns (fr.rgb *= fr.a, br.rgb *= br.a) and then dithers the
+                // already-premultiplied value. The XNA build's default is BlendState.AlphaBlend, and
+                // in XNA that is the premultiplied pair - the trap here is the abstraction's name,
+                // where NonPremultiplied is the straight-alpha one. Using it multiplies by alpha a
+                // second time and washes everything semi-transparent out.
+                //
+                // Spelled out rather than using BlendStateDesc.AlphaBlend, which sets only the color
+                // pair and leaves the alpha pair at One/Zero. XNA's AlphaBlend accumulates the alpha
+                // channel too. Writing straight to the swapchain the two are indistinguishable, but a
+                // render target composited later would carry the wrong coverage.
+                BlendState: new BlendStateDesc(
+                    Enabled: true,
+                    SourceColor: BlendFactor.One,
+                    DestinationColor: BlendFactor.InverseSourceAlpha,
+                    SourceAlpha: BlendFactor.One,
+                    DestinationAlpha: BlendFactor.InverseSourceAlpha),
+                DepthStencilState: DepthStencilStateDesc.None,
+                // The XNA build culls counter-clockwise here, which for these quads culls the
+                // back faces a shape never shows; the abstraction's default culls back faces and
+                // a shape's winding is its own business, so nothing is culled.
+                RasterizerState: new RasterizerStateDesc(CullMode: CullMode.None)));
+            _parameters = program.Bind();
+
+            _sampler = device.CreateSampler(new SamplerDesc(TextureFilter.Linear, TextureAddressMode.Clamp, TextureAddressMode.Clamp));
+            _pointClamp = device.CreateSampler(new SamplerDesc(TextureFilter.Point, TextureAddressMode.Clamp, TextureAddressMode.Clamp));
+            _pointWrap = device.CreateSampler(new SamplerDesc(TextureFilter.Point, TextureAddressMode.Wrap, TextureAddressMode.Wrap));
+
+            _blueNoise = BlueNoise.CreateTexture(device);
+
+            if (warmup) {
+                Warmup();
+            }
+        }
+#else
         /// <param name="graphicsDevice">The device to draw with.</param>
         /// <param name="effect">
         /// A replacement for the built-in shader. Leave it null, which loads the one embedded in
@@ -65,10 +136,22 @@ namespace Apos.Shapes {
                 }
             }
         }
+#endif
 
         // Draws one throwaway frame so the driver compiles the shader here. It takes a real
         // draw call: applying the pass doesn't bring the compile forward.
         private void WarmupDraw() {
+#if NFMW
+            // No state to save and restore: pipeline state is baked into the pipeline, and the
+            // swapchain's size is the one thing this reads. A draw outside it is clipped away.
+            int vpWidth = _device.Swapchain.Width;
+            int vpHeight = _device.Swapchain.Height;
+            if (vpWidth <= 0 || vpHeight <= 0) return;
+
+            Begin();
+            FillCircle(new Vector2(-8f, -8f), 1f, Color.White); // Outside the viewport, so it writes no pixels.
+            End();
+#else
             Viewport viewport = _graphicsDevice.Viewport;
             if (viewport.Width <= 0 || viewport.Height <= 0) return;
 
@@ -86,6 +169,7 @@ namespace Apos.Shapes {
             _graphicsDevice.SamplerStates[0] = samplerState;
             _graphicsDevice.DepthStencilState = depthStencilState;
             _graphicsDevice.RasterizerState = rasterizerState;
+#endif
         }
 
         /// <summary>
@@ -98,6 +182,12 @@ namespace Apos.Shapes {
         /// blank. Does nothing while a render target is bound, since the present isn't ours.
         /// </remarks>
         public void Warmup() {
+#if NFMW
+            // The frame is the host's here: there is no present to own, and clearing the
+            // backbuffer would throw away whatever the host has already put in it. The draw
+            // itself is what matters, since that is what brings the driver's compile forward.
+            WarmupDraw();
+#else
             if (_graphicsDevice.GetRenderTargets().Length > 0) return;
 
             WarmupDraw();
@@ -105,8 +195,10 @@ namespace Apos.Shapes {
             // Cleared first so the present shows black instead of an unwritten backbuffer.
             _graphicsDevice.Clear(Color.Black);
             _graphicsDevice.Present();
+#endif
         }
 
+#if !NFMW
         /// <summary>
         /// The shader ships inside the assembly now, so the ContentManager goes unused.
         /// </summary>
@@ -161,9 +253,15 @@ namespace Apos.Shapes {
             stream.ReadExactly(bytes);
             return bytes;
         }
+#endif
 
+#if NFMW
+        /// <summary>The device this batch draws with.</summary>
+        public IGraphicsDevice Device => _device;
+#else
         /// <summary>The device this batch draws with.</summary>
         public GraphicsDevice GraphicsDevice => _graphicsDevice;
+#endif
 
         /// <summary>
         /// Color space that gradient and border colors are interpolated in. Defaults to Oklab. Captured per shape
@@ -196,6 +294,70 @@ namespace Apos.Shapes {
         /// </summary>
         public AAStyle AAStyle { get; set; } = AAStyle.Outside;
 
+        // The two signatures get their own documentation rather than one comment with an #if inside
+        // it: a preprocessor directive between a doc comment and its member breaks the association,
+        // so the fragments would each warn CS1587 instead of documenting anything.
+#if NFMW
+        /// <summary>
+        /// Starts a batch whose draws go onto a command buffer the caller supplies.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This is the overload a host with its own frame should use. The abstraction allows one
+        /// live command buffer at a time, and a host that renders a scene holds the frame's from
+        /// the start of the frame to its <c>Submit</c> - the game this library is ported for does
+        /// exactly that. A batch that acquired its own would collide with it and throw.
+        /// </para>
+        /// <para>
+        /// The caller keeps ownership: it submits and presents, and it is responsible for having
+        /// the right render target and viewport bound. Everything this overload writes happens
+        /// between its own calls and returns, so the caller's buffer state is unchanged.
+        /// </para>
+        /// <para>
+        /// See <see cref="SetCommandBuffer"/> for the form that directs already-open batches, or
+        /// the parameterless overload for the standalone case where the batch owns its frame.
+        /// </para>
+        /// </remarks>
+        /// <param name="cb">The frame's live command buffer. Submitted by the caller, not here.</param>
+        /// <param name="view">Camera transform. Defaults to identity.</param>
+        /// <param name="projection">Defaults to an orthographic projection over the current viewport, with y pointing down.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="cb"/> is null.</exception>
+        /// <exception cref="InvalidOperationException"><see cref="End"/> hasn't been called since the last Begin.</exception>
+        public void Begin(ICommandBuffer cb, Matrix? view = null, Matrix? projection = null) {
+            ArgumentNullException.ThrowIfNull(cb);
+            _frameCommandBuffer = cb;
+            Begin(view, projection);
+        }
+
+        /// <summary>
+        /// Directs this batch's draws onto a caller-supplied command buffer until cleared.
+        /// </summary>
+        /// <remarks>
+        /// For a host that wants <see cref="Begin(Matrix?, Matrix?)"/>'s convenience form - which
+        /// acquires and submits a buffer of its own - but draws inside a frame it is already
+        /// recording. Set it before the batch is flushed and the batch stops acquiring buffers.
+        /// A caller that knows at <see cref="Begin(ICommandBuffer, Matrix?, Matrix?)"/> time can
+        /// use that overload instead, which is the less error-prone of the two.
+        /// </remarks>
+        /// <param name="cb">The frame's live command buffer, or null to go back to acquiring one.</param>
+        public void SetCommandBuffer(ICommandBuffer? cb) => _frameCommandBuffer = cb;
+
+
+        /// <summary>
+        /// Starts a batch. Draw calls only work between this and <see cref="End"/>.
+        /// The view matrix is where a camera goes, and shapes stay crisp under it because they are
+        /// rasterized at the size they end up on screen rather than scaled up.
+        /// </summary>
+        /// <param name="view">Camera transform. Defaults to identity.</param>
+        /// <param name="projection">Defaults to an orthographic projection over the current viewport, with y pointing down.</param>
+        /// <exception cref="InvalidOperationException"><see cref="End"/> hasn't been called since the last Begin.</exception>
+        /// <remarks>
+        /// The four render-state arguments the XNA build takes are absent here. Pipeline state is
+        /// baked when the pipeline is created, so it cannot vary per batch; the values those
+        /// arguments defaulted to are the ones the pipeline was built with. See the constructor.
+        /// </remarks>
+        public void Begin(Matrix? view = null, Matrix? projection = null) {
+#else
         /// <summary>
         /// Starts a batch. Draw calls only work between this and <see cref="End"/>.
         /// The view matrix is where a camera goes, and shapes stay crisp under it because they are
@@ -209,6 +371,7 @@ namespace Apos.Shapes {
         /// <param name="rasterizerState">Defaults to <see cref="RasterizerState.CullCounterClockwise"/>.</param>
         /// <exception cref="InvalidOperationException"><see cref="End"/> hasn't been called since the last Begin.</exception>
         public void Begin(Matrix? view = null, Matrix? projection = null, BlendState? blendState = null, SamplerState? samplerState = null, DepthStencilState? depthStencilState = null, RasterizerState? rasterizerState = null) {
+#endif
             if (_beginCalled) {
                 throw new InvalidOperationException("Begin cannot be called again until End has been successfully called.");
             }
@@ -221,25 +384,34 @@ namespace Apos.Shapes {
                 _view = Matrix.Identity;
             }
 
+#if NFMW
+            float vpWidth = _device.Swapchain.Width;
+            float vpHeight = _device.Swapchain.Height;
+#else
             Viewport viewport = _graphicsDevice.Viewport;
+            float vpWidth = viewport.Width;
+            float vpHeight = viewport.Height;
+#endif
             if (projection != null) {
                 _projection = projection.Value;
             } else {
-                _projection = Matrix.CreateOrthographicOffCenter(0, viewport.Width, viewport.Height, 0, 0, 1);
+                _projection = Matrix.CreateOrthographicOffCenter(0, vpWidth, vpHeight, 0, 0, 1);
             }
 
             // Shapes live on the z = 0 plane, so the world→screen mapping only keeps a
             // perspective term when x or y feeds into clip w. Affine projections have one
             // pixel size everywhere; perspective ones resample it per draw call.
             _worldToClip = _view * _projection;
-            _halfViewport = new Vector2(viewport.Width * 0.5f, viewport.Height * 0.5f);
+            _halfViewport = new Vector2(vpWidth * 0.5f, vpHeight * 0.5f);
             _isPerspective = _worldToClip.M14 != 0f || _worldToClip.M24 != 0f;
             _pixelSize = PixelSizeAt(Vector2.Zero);
 
+#if !NFMW
             _blendState = blendState ?? BlendState.AlphaBlend;
             _samplerState = samplerState ?? SamplerState.LinearClamp;
             _depthStencilState = depthStencilState ?? DepthStencilState.None;
             _rasterizerState = rasterizerState ?? RasterizerState.CullCounterClockwise;
+#endif
         }
         /// <summary>Draws a circle with both a fill and a border.</summary>
         /// <param name="center">Center of the circle.</param>
@@ -1660,7 +1832,12 @@ namespace Apos.Shapes {
             float quarter = dash.IsEnabled ? EllipseArc.Quarter(radius1, radius2) : 0f;
             ResolvedDash rd = dash.Resolve(4f * quarter, closed: true);
             if (rd.TypeDigit > 0) {
-                _ellipseArc ??= EllipseArc.CreateTexture(_graphicsDevice);
+                _ellipseArc ??= EllipseArc.CreateTexture(
+#if NFMW
+                    _device);
+#else
+                    _graphicsDevice);
+#endif
             }
 
             if (thickness > 0f && IsTransparent(fill)) {
@@ -2417,7 +2594,7 @@ namespace Apos.Shapes {
         /// <param name="source">The part of the texture to read, in pixels.</param>
         /// <param name="mask">Color multiplied into the texture in raw RGBA.</param>
         public void Draw(Texture2D texture, Vector2 xy, RectangleF source, Color mask) {
-            Draw(texture, Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(xy), Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.Position), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(xy), Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.TopLeft), mask: mask);
         }
         /// <summary>Draws a texture rotated and scaled around an origin.</summary>
         /// <param name="texture">The texture to draw.</param>
@@ -2427,7 +2604,7 @@ namespace Apos.Shapes {
         /// <param name="origin">The point rotation and scaling turn around, in texture pixels.</param>
         /// <param name="scale">Scale on each axis.</param>
         public void Draw(Texture2D texture, Vector2 xy, Color mask, float rotation, Vector2 origin, Vector2 scale) {
-            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(scale) * Matrix3x2.CreateRotationZ(rotation) * Matrix3x2.CreateTranslation(xy), Matrix3x2.CreateScale(texture.Width, texture.Height), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(scale) * RotationZ(rotation) * Matrix3x2.CreateTranslation(xy), Matrix3x2.CreateScale(texture.Width, texture.Height), mask: mask);
         }
         /// <summary>Draws a texture rotated and scaled evenly around an origin.</summary>
         /// <param name="texture">The texture to draw.</param>
@@ -2448,7 +2625,7 @@ namespace Apos.Shapes {
         /// <param name="origin">The point rotation and scaling turn around, in texture pixels.</param>
         /// <param name="scale">Scale on each axis.</param>
         public void Draw(Texture2D texture, Vector2 xy, RectangleF source, Color mask, float rotation, Vector2 origin, Vector2 scale) {
-            Draw(texture, Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(scale) * Matrix3x2.CreateRotationZ(rotation) * Matrix3x2.CreateTranslation(xy), Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.Position), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(scale) * RotationZ(rotation) * Matrix3x2.CreateTranslation(xy), Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.TopLeft), mask: mask);
         }
         /// <summary>Draws part of a texture rotated and scaled evenly around an origin.</summary>
         /// <param name="texture">The texture to draw.</param>
@@ -2470,7 +2647,7 @@ namespace Apos.Shapes {
         /// <param name="scale">Scale on each axis.</param>
         /// <param name="effects">Flips the texture horizontally, vertically, or both.</param>
         public void Draw(Texture2D texture, Vector2 xy, Color mask, float rotation, Vector2 origin, Vector2 scale, SpriteEffects effects) {
-            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(scale) * Matrix3x2.CreateRotationZ(rotation) * Matrix3x2.CreateTranslation(xy), (effects & (SpriteEffects.FlipHorizontally | SpriteEffects.FlipVertically)) != 0 ? Matrix3x2.CreateScale(1f) * Matrix3x2.CreateTranslation(-0.5f, -0.5f) * Matrix3x2.CreateScale((effects & SpriteEffects.FlipHorizontally) != 0 ? -1f : 1f, (effects & SpriteEffects.FlipVertically) != 0 ? -1f : 1f) * Matrix3x2.CreateTranslation(0.5f, 0.5f) * Matrix3x2.CreateScale(texture.Width, texture.Height) : Matrix3x2.CreateScale(texture.Width, texture.Height), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(scale) * RotationZ(rotation) * Matrix3x2.CreateTranslation(xy), (effects & (SpriteEffects.FlipHorizontally | SpriteEffects.FlipVertically)) != 0 ? Matrix3x2.CreateScale(1f) * Matrix3x2.CreateTranslation(-0.5f, -0.5f) * Matrix3x2.CreateScale((effects & SpriteEffects.FlipHorizontally) != 0 ? -1f : 1f, (effects & SpriteEffects.FlipVertically) != 0 ? -1f : 1f) * Matrix3x2.CreateTranslation(0.5f, 0.5f) * Matrix3x2.CreateScale(texture.Width, texture.Height) : Matrix3x2.CreateScale(texture.Width, texture.Height), mask: mask);
         }
         /// <summary>Draws a texture rotated, scaled evenly and flipped around an origin.</summary>
         /// <param name="texture">The texture to draw.</param>
@@ -2493,7 +2670,7 @@ namespace Apos.Shapes {
         /// <param name="scale">Scale on each axis.</param>
         /// <param name="effects">Flips the texture horizontally, vertically, or both.</param>
         public void Draw(Texture2D texture, Vector2 xy, RectangleF source, Color mask, float rotation, Vector2 origin, Vector2 scale, SpriteEffects effects) {
-            Draw(texture, Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(scale) * Matrix3x2.CreateRotationZ(rotation) * Matrix3x2.CreateTranslation(xy), (effects & (SpriteEffects.FlipHorizontally | SpriteEffects.FlipVertically)) != 0 ? Matrix3x2.CreateScale(1f) * Matrix3x2.CreateTranslation(-0.5f, -0.5f) * Matrix3x2.CreateScale((effects & SpriteEffects.FlipHorizontally) != 0 ? -1f : 1f, (effects & SpriteEffects.FlipVertically) != 0 ? -1f : 1f) * Matrix3x2.CreateTranslation(0.5f, 0.5f) * Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.Position) : Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.Position), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(scale) * RotationZ(rotation) * Matrix3x2.CreateTranslation(xy), (effects & (SpriteEffects.FlipHorizontally | SpriteEffects.FlipVertically)) != 0 ? Matrix3x2.CreateScale(1f) * Matrix3x2.CreateTranslation(-0.5f, -0.5f) * Matrix3x2.CreateScale((effects & SpriteEffects.FlipHorizontally) != 0 ? -1f : 1f, (effects & SpriteEffects.FlipVertically) != 0 ? -1f : 1f) * Matrix3x2.CreateTranslation(0.5f, 0.5f) * Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.TopLeft) : Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.TopLeft), mask: mask);
         }
         /// <summary>Draws part of a texture rotated, scaled evenly and flipped around an origin.</summary>
         /// <param name="texture">The texture to draw.</param>
@@ -2511,14 +2688,14 @@ namespace Apos.Shapes {
         /// <param name="texture">The texture to draw.</param>
         /// <param name="destination">The rectangle to fill, in world units.</param>
         public void Draw(Texture2D texture, RectangleF destination) {
-            Draw(texture, Matrix3x2.CreateScale(destination.Width, destination.Height) * Matrix3x2.CreateTranslation(destination.Position));
+            Draw(texture, Matrix3x2.CreateScale(destination.Width, destination.Height) * Matrix3x2.CreateTranslation(destination.TopLeft));
         }
         /// <summary>Draws a texture stretched to fill a rectangle, tinted.</summary>
         /// <param name="texture">The texture to draw.</param>
         /// <param name="destination">The rectangle to fill, in world units.</param>
         /// <param name="mask">Color multiplied into the texture in raw RGBA.</param>
         public void Draw(Texture2D texture, RectangleF destination, Color mask) {
-            Draw(texture, Matrix3x2.CreateScale(destination.Width, destination.Height) * Matrix3x2.CreateTranslation(destination.Position), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(destination.Width, destination.Height) * Matrix3x2.CreateTranslation(destination.TopLeft), mask: mask);
         }
         /// <summary>Draws part of a texture stretched to fill a rectangle.</summary>
         /// <param name="texture">The texture to draw.</param>
@@ -2526,7 +2703,7 @@ namespace Apos.Shapes {
         /// <param name="source">The part of the texture to read, in pixels.</param>
         /// <param name="mask">Color multiplied into the texture in raw RGBA.</param>
         public void Draw(Texture2D texture, RectangleF destination, RectangleF source, Color mask) {
-            Draw(texture, Matrix3x2.CreateScale(destination.Width, destination.Height) * Matrix3x2.CreateTranslation(destination.Position), Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.Position), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(destination.Width, destination.Height) * Matrix3x2.CreateTranslation(destination.TopLeft), Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.TopLeft), mask: mask);
         }
         /// <summary>Draws a texture stretched to fill a rectangle, rotated around an origin.</summary>
         /// <param name="texture">The texture to draw.</param>
@@ -2535,7 +2712,7 @@ namespace Apos.Shapes {
         /// <param name="rotation">Angle in radians.</param>
         /// <param name="origin">The point rotation turns around, in texture pixels.</param>
         public void Draw(Texture2D texture, RectangleF destination, Color mask, float rotation, Vector2 origin) {
-            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(destination.Width / texture.Width, destination.Height / texture.Height) * Matrix3x2.CreateRotationZ(rotation) * Matrix3x2.CreateTranslation(destination.Position), Matrix3x2.CreateScale(texture.Width, texture.Height), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(destination.Width / texture.Width, destination.Height / texture.Height) * RotationZ(rotation) * Matrix3x2.CreateTranslation(destination.TopLeft), Matrix3x2.CreateScale(texture.Width, texture.Height), mask: mask);
         }
         /// <summary>Draws part of a texture stretched to fill a rectangle, rotated around an origin.</summary>
         /// <param name="texture">The texture to draw.</param>
@@ -2545,7 +2722,7 @@ namespace Apos.Shapes {
         /// <param name="rotation">Angle in radians.</param>
         /// <param name="origin">The point rotation turns around, in texture pixels.</param>
         public void Draw(Texture2D texture, RectangleF destination, RectangleF source, Color mask, float rotation, Vector2 origin) {
-            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(destination.Width / texture.Width, destination.Height / texture.Height) * Matrix3x2.CreateRotationZ(rotation) * Matrix3x2.CreateTranslation(destination.Position), Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.Position), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(destination.Width / texture.Width, destination.Height / texture.Height) * RotationZ(rotation) * Matrix3x2.CreateTranslation(destination.TopLeft), Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.TopLeft), mask: mask);
         }
         /// <summary>Draws a texture stretched to fill a rectangle, rotated and flipped around an origin.</summary>
         /// <param name="texture">The texture to draw.</param>
@@ -2555,7 +2732,7 @@ namespace Apos.Shapes {
         /// <param name="origin">The point rotation turns around, in texture pixels.</param>
         /// <param name="effects">Flips the texture horizontally, vertically, or both.</param>
         public void Draw(Texture2D texture, RectangleF destination, Color mask, float rotation, Vector2 origin, SpriteEffects effects) {
-            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(destination.Width / texture.Width, destination.Height / texture.Height) * Matrix3x2.CreateRotationZ(rotation) * Matrix3x2.CreateTranslation(destination.Position), (effects & (SpriteEffects.FlipHorizontally | SpriteEffects.FlipVertically)) != 0 ? Matrix3x2.CreateScale(1f) * Matrix3x2.CreateTranslation(-0.5f, -0.5f) * Matrix3x2.CreateScale((effects & SpriteEffects.FlipHorizontally) != 0 ? -1f : 1f, (effects & SpriteEffects.FlipVertically) != 0 ? -1f : 1f) * Matrix3x2.CreateTranslation(0.5f, 0.5f) * Matrix3x2.CreateScale(texture.Width, texture.Height) : Matrix3x2.CreateScale(texture.Width, texture.Height), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(destination.Width / texture.Width, destination.Height / texture.Height) * RotationZ(rotation) * Matrix3x2.CreateTranslation(destination.TopLeft), (effects & (SpriteEffects.FlipHorizontally | SpriteEffects.FlipVertically)) != 0 ? Matrix3x2.CreateScale(1f) * Matrix3x2.CreateTranslation(-0.5f, -0.5f) * Matrix3x2.CreateScale((effects & SpriteEffects.FlipHorizontally) != 0 ? -1f : 1f, (effects & SpriteEffects.FlipVertically) != 0 ? -1f : 1f) * Matrix3x2.CreateTranslation(0.5f, 0.5f) * Matrix3x2.CreateScale(texture.Width, texture.Height) : Matrix3x2.CreateScale(texture.Width, texture.Height), mask: mask);
         }
         /// <summary>Draws part of a texture stretched to fill a rectangle, rotated and flipped around an origin.</summary>
         /// <param name="texture">The texture to draw.</param>
@@ -2566,7 +2743,7 @@ namespace Apos.Shapes {
         /// <param name="origin">The point rotation turns around, in texture pixels.</param>
         /// <param name="effects">Flips the texture horizontally, vertically, or both.</param>
         public void Draw(Texture2D texture, RectangleF destination, RectangleF source, Color mask, float rotation, Vector2 origin, SpriteEffects effects) {
-            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(destination.Width / texture.Width, destination.Height / texture.Height) * Matrix3x2.CreateRotationZ(rotation) * Matrix3x2.CreateTranslation(destination.Position), (effects & (SpriteEffects.FlipHorizontally | SpriteEffects.FlipVertically)) != 0 ? Matrix3x2.CreateScale(1f) * Matrix3x2.CreateTranslation(-0.5f, -0.5f) * Matrix3x2.CreateScale((effects & SpriteEffects.FlipHorizontally) != 0 ? -1f : 1f, (effects & SpriteEffects.FlipVertically) != 0 ? -1f : 1f) * Matrix3x2.CreateTranslation(0.5f, 0.5f) * Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.Position) : Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.Position), mask: mask);
+            Draw(texture, Matrix3x2.CreateScale(texture.Width, texture.Height) * Matrix3x2.CreateTranslation(-origin) * Matrix3x2.CreateScale(destination.Width / texture.Width, destination.Height / texture.Height) * RotationZ(rotation) * Matrix3x2.CreateTranslation(destination.TopLeft), (effects & (SpriteEffects.FlipHorizontally | SpriteEffects.FlipVertically)) != 0 ? Matrix3x2.CreateScale(1f) * Matrix3x2.CreateTranslation(-0.5f, -0.5f) * Matrix3x2.CreateScale((effects & SpriteEffects.FlipHorizontally) != 0 ? -1f : 1f, (effects & SpriteEffects.FlipVertically) != 0 ? -1f : 1f) * Matrix3x2.CreateTranslation(0.5f, 0.5f) * Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.TopLeft) : Matrix3x2.CreateScale(source.Width, source.Height) * Matrix3x2.CreateTranslation(source.TopLeft), mask: mask);
         }
 
         /// <summary>
@@ -2606,7 +2783,7 @@ namespace Apos.Shapes {
         /// </param>
         /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
         /// <exception cref="ArgumentNullException"><paramref name="font"/> is null.</exception>
-        /// <exception cref="InvalidOperationException"><see cref="Begin"/> was never called.</exception>
+        /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
         public void DrawString(ShapeFont font, ReadOnlySpan<char> text, Vector2 position, float size, Gradient fill, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
             ArgumentNullException.ThrowIfNull(font);
             if (text.IsEmpty) return;
@@ -2669,7 +2846,7 @@ namespace Apos.Shapes {
         /// <param name="origin">The point rotation turns around, in world units out from the top left corner.</param>
         /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
         /// <exception cref="ArgumentNullException"><paramref name="font"/> is null.</exception>
-        /// <exception cref="InvalidOperationException"><see cref="Begin"/> was never called.</exception>
+        /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
         public void DrawString(ShapeFont font, string text, Vector2 position, float size, Gradient fill, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
             DrawString(font, text.AsSpan(), position, size, fill, rotation, origin, aaSize);
         }
@@ -2699,7 +2876,7 @@ namespace Apos.Shapes {
         /// </param>
         /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
         /// <exception cref="ArgumentNullException"><paramref name="svg"/> is null.</exception>
-        /// <exception cref="InvalidOperationException"><see cref="Begin"/> was never called.</exception>
+        /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
         public void DrawSvg(ShapeSvg svg, Vector2 position, float size, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
             DrawSvgCore(svg, position, size, default, false, rotation, origin, aaSize);
         }
@@ -2724,7 +2901,7 @@ namespace Apos.Shapes {
         /// <param name="origin">The point rotation turns around, in world units out from the top left corner.</param>
         /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
         /// <exception cref="ArgumentNullException"><paramref name="svg"/> is null.</exception>
-        /// <exception cref="InvalidOperationException"><see cref="Begin"/> was never called.</exception>
+        /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
         public void DrawSvg(ShapeSvg svg, Vector2 position, float size, Gradient fill, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
             DrawSvgCore(svg, position, size, fill, true, rotation, origin, aaSize);
         }
@@ -2945,9 +3122,9 @@ namespace Apos.Shapes {
         }
 
         /// <summary>
-        /// Ends the batch and sends everything drawn since <see cref="Begin"/> to the GPU.
+        /// Ends the batch and sends everything drawn since <c>Begin</c> to the GPU.
         /// </summary>
-        /// <exception cref="InvalidOperationException"><see cref="Begin"/> was never called, or a path is still open.</exception>
+        /// <exception cref="InvalidOperationException"><c>Begin</c> was never called, or a path is still open.</exception>
         public void End() {
             if (!_beginCalled) {
                 throw new InvalidOperationException("Begin must be called before calling End.");
@@ -2978,10 +3155,138 @@ namespace Apos.Shapes {
                 _ellipseArc?.Dispose();
                 _rampAtlas?.Dispose();
                 _glyphAtlas?.Dispose();
+#if NFMW
+                _pipeline.Dispose();
+                _sampler.Dispose();
+                _pointClamp.Dispose();
+                _pointWrap.Dispose();
+#endif
             }
             _disposed = true;
         }
 
+#if NFMW
+        private void Flush() {
+            if (_triangleCount == 0) return;
+
+            // A host that is recording a frame of its own hands its live command buffer in, and
+            // then owns the Submit as well. Acquiring here would collide with it - the abstraction
+            // allows exactly one live buffer - so the choice has to be explicit rather than
+            // attempted-and-caught. See Begin(ICommandBuffer, ...).
+            var frame = _frameCommandBuffer;
+            var cb = frame ?? _device.AcquireCommandBuffer();
+
+            // Anything baked since the last flush reaches its texture before this one samples it.
+            // A glyph has to be in the atlas before any quad reads it.
+            //
+            // This runs before the pipeline is bound, which is deliberate: an upload is a copy
+            // into a resource and not a draw, so its ordering is against the sampling draw rather
+            // than against the pipeline. sokol depends on that - its UpdateBuffer/UpdateTexture
+            // write a CPU mirror that is flushed at draw time, and it documents that they must not
+            // be inside a pass - while GL issues its call straight away either way.
+            foreach (var upload in _pendingGlyphUploads) {
+                cb.UpdateTexture(upload.Texture, 0, upload.Y, upload.Texture.Width, upload.Rows, upload.Data);
+            }
+            _pendingGlyphUploads.Clear();
+
+            // Every texture this batch samples is brought up to date before the pipeline goes up,
+            // because the uploads are copies into resources rather than draw work and so have no
+            // ordering relationship with the pipeline at all.
+            UploadRamps(cb);
+            UploadGlyphs(cb);
+
+            if (_indicesChanged) {
+                _vertexBuffer.Dispose();
+                _indexBuffer.Dispose();
+
+                _vertexBuffer = _device.CreateBuffer(new BufferDesc(BufferKind.Vertex, BufferUsage.Dynamic, _vertices.Length * VertexStride));
+
+                GenerateIndexArray();
+
+                _indexBuffer = _device.CreateBuffer(new BufferDesc(BufferKind.Index, BufferUsage.Dynamic, _indices.Length * sizeof(uint), IndexFormat.UInt32), MemoryMarshal.AsBytes(_indices.AsSpan()));
+
+                _indicesChanged = false;
+            }
+
+            cb.UpdateBuffer(_vertexBuffer, MemoryMarshal.AsBytes(_vertices.AsSpan(0, _vertexCount)));
+
+            // The pipeline goes up before the first SetUniform, and that ordering is required
+            // rather than chosen: uniform storage belongs to the bound pipeline, so GL and sokol
+            // both refuse the write outright until one is bound.
+            cb.SetPipeline(_pipeline);
+
+            // Uniforms are byte offsets into the program's merged block, which is what the
+            // generated parameters carry. Every one of them belongs to the pipeline bound above,
+            // so the two are always picked together.
+            _parameters.view_projection.SetValue(cb, _worldToClip); // Begin already multiplied these.
+            _parameters.half_viewport.SetValue(cb, _halfViewport);
+            _parameters.dither_scale.SetValue(cb, DitherStrength / 255f);
+            _parameters.dither_mode.SetValue(cb, DitherNoiseSource == DitherNoise.BlueNoise ? 1f : 0f);
+            _parameters.ramp_texel.SetValue(cb, new Vector2(1f / (Ramp.Width * 2), _rampAtlas != null ? 1f / _rampAtlas.Height : 0f));
+            // The glyph atlases' sizes are only known once UploadGlyphs has run, which is why
+            // these are here rather than beside their uploads. Left unset when there is no atlas:
+            // a fresh pipeline's block starts zeroed, and the shader only reaches this addressing
+            // under the glyph shape, which a batch with no atlas cannot have drawn.
+            if (_glyphAtlas?.Band is { } band) {
+                _parameters.band_tex_size.SetValue(cb, new Vector2(band.Width, band.Height));
+                _parameters.band_texel.SetValue(cb, new Vector2(1f / band.Width, 1f / band.Height));
+            }
+            if (_glyphAtlas?.Curve is { } curve) {
+                _parameters.curve_texel.SetValue(cb, new Vector2(1f / curve.Width, 1f / curve.Height));
+            }
+
+            cb.SetVertexBuffer(0, _vertexBuffer, VertexStride);
+            cb.SetIndexBuffer(_indexBuffer);
+
+            // Six units, in the order the pixel shader first samples them. See the note on
+            // the sampler declarations in apos-shapes.fx: these numbers and that order have
+            // to agree, and nothing warns when they don't. The units come from the reflection
+            // rather than being written out as literals, so a shader whose declarations are
+            // reordered rebinds correctly instead of silently sampling the wrong table.
+            _parameters.TextureTex.SetValue(cb, _texture ?? _blueNoise, _sampler);
+            if (_glyphAtlas?.Band != null && _glyphAtlas.Curve != null) {
+                // Both glyph tables are read texel by texel as data, so they must arrive
+                // unfiltered; clamped because a padded lane's fetch is free to land anywhere.
+                _parameters.BandTex.SetValue(cb, _glyphAtlas.Band, _pointClamp);
+                _parameters.CurveTex.SetValue(cb, _glyphAtlas.Curve, _pointClamp);
+            }
+            if (_ellipseArc != null) {
+                // The shader reads the table's 16 bit values apart by hand, so it must arrive
+                // unfiltered; clamped because the walk runs to both ends of the quadrant.
+                _parameters.ArcTex.SetValue(cb, _ellipseArc, _pointClamp);
+            }
+            _parameters.BlueNoiseTex.SetValue(cb, _blueNoise, _pointWrap);
+            // The ramp unit stays bound to something valid even with no atlas: the shader
+            // only samples it under a ramp flag no quad sets in that case.
+            _parameters.RampTex.SetValue(cb, _rampAtlas ?? _blueNoise, _pointClamp);
+
+            cb.DrawIndexed(0, 0, _triangleCount);
+
+            // Only a buffer this method acquired is this method's to submit. A host-supplied one
+            // is mid-recording, and submitting it here would end the host's frame early.
+            if (frame is null) _device.Submit(cb);
+
+            _triangleCount = 0;
+            _vertexCount = 0;
+            _indexCount = 0;
+            // Everything packed so far is drawn, so the rows it referenced are free to recycle.
+            _ramps.Flushed();
+            _glyphs.Flushed();
+        }
+
+        // Brings the two glyph textures up to date with the table's arenas, then hands the
+        // shader the sizes its linear texel addressing divides by. The shader only reaches this
+        // addressing under the glyph shape, so a batch that never drew one leaves the three
+        // parameters alone.
+        //
+        // The parameters are written by Flush, after the pipeline goes up: the atlas's size is
+        // only known once this has run, and the write needs the pipeline.
+        private void UploadGlyphs(ICommandBuffer cb) {
+            if (_glyphs.Count == 0) return;
+            _glyphAtlas ??= new GlyphAtlas();
+            _glyphAtlas.Upload(_device, cb, _glyphs, _pendingGlyphUploads);
+        }
+#else
         private void Flush() {
             if (_triangleCount == 0) return;
 
@@ -3071,7 +3376,40 @@ namespace Apos.Shapes {
                 _curveTexel?.SetValue(new Vector2(1f / _glyphAtlas.Curve.Width, 1f / _glyphAtlas.Curve.Height));
             }
         }
+#endif
 
+#if NFMW
+        // Brings the atlas up to date with the global registry by generation: rows the atlas
+        // has never seen and rows recycled since it last looked both come back dirty, and
+        // adjacent dirty rows coalesce into one upload. Growth reallocates then refills, which
+        // keeps every already packed row index valid. A row is two physical texels per curve
+        // texel, values then integral.
+        private void UploadRamps(ICommandBuffer cb) {
+            int count = _ramps.Count;
+            if (count == 0) return;
+            if (_rampAtlas == null || _rampAtlas.Height < count) {
+                _rampAtlas?.Dispose();
+                int rows = 16;
+                while (rows < count) rows *= 2;
+                _rampAtlas = _device.CreateTexture(new TextureDesc(Ramp.Width * 2, rows, TextureFormat.Rgba8));
+                Array.Clear(_rampGenUploaded);
+            }
+            _ramps.CollectDirty(_rampGenUploaded, _rampDirty, ref _rampBuffer);
+            for (int k = 0; k < _rampDirty.Count;) {
+                if (_rampDirty[k] >= _rampAtlas.Height) {
+                    // Added between the size check and the collect. Only quads packed after this
+                    // flush can reference it, so it waits for the next one, unstamped.
+                    _rampGenUploaded[_rampDirty[k]] = 0;
+                    k++;
+                    continue;
+                }
+                int run = 1;
+                while (k + run < _rampDirty.Count && _rampDirty[k + run] == _rampDirty[k] + run && _rampDirty[k + run] < _rampAtlas.Height) run++;
+                cb.UpdateTexture(_rampAtlas, 0, _rampDirty[k], Ramp.Width * 2, run, _rampBuffer.AsSpan(k * Ramp.Width * 8, run * Ramp.Width * 8));
+                k += run;
+            }
+        }
+#else
         // Brings the atlas up to date with the global registry by generation: rows the atlas
         // has never seen and rows recycled since it last looked both come back dirty, and
         // adjacent dirty rows coalesce into one SetData. Growth reallocates then refills, which
@@ -3102,6 +3440,7 @@ namespace Apos.Shapes {
                 k += run;
             }
         }
+#endif
         // World units per pixel at a point on the z = 0 plane: the largest singular value
         // of the screen→world Jacobian of the view, projection and viewport chain. It is a
         // conservative bound used to grow quads around the AA band and to inset hollow
@@ -3111,6 +3450,14 @@ namespace Apos.Shapes {
         // one carries exactly. A call that passes a negative width asks for the centered band
         // whatever the batch is set to. See the note at the top of SpritePixelShader.
         private float Aa(float aaSize) => AAStyle == AAStyle.Centered ? -MathF.Abs(aaSize) : aaSize;
+
+#if NFMW
+        // MonoGame.Extended's Matrix3x2 spells this CreateRotationZ; System.Numerics' spells it
+        // CreateRotation. One name for both keeps the Draw overloads identical either way.
+        private static Matrix3x2 RotationZ(float radians) => Matrix3x2.CreateRotation(radians);
+#else
+        private static Matrix3x2 RotationZ(float radians) => Matrix3x2.CreateRotationZ(radians);
+#endif
 
         // The sign of aaSize says where the fade sits, not how wide it is, so every margin
         // measures it with Abs. A centred fade only reaches half this far past the edge, which
@@ -3536,7 +3883,11 @@ namespace Apos.Shapes {
             _fromVertex = (uint)_vertices.Length;
         }
 
+#if NFMW
+        private ITexture? _texture = null;
+#else
         private Texture2D? _texture = null;
+#endif
 
         // This batch's own glyph table and the two textures that mirror its arenas, built the
         // first time a glyph is drawn. Per batch for the same reason the ramp table is: two
@@ -3549,8 +3900,47 @@ namespace Apos.Shapes {
         private const int _initialVertices = 2048 * 4;
         private const int _initialIndices = 2048 * 6;
 
+#if !NFMW
+        // The driver caches a link, and each XNA batch has its own Effect, so only the first
+        // batch needs the full warmup. Here the shader module and pipeline are the device's, so
+        // there is one compile for all batches and nothing to remember.
         private static bool _warmed = false;
+#endif
 
+#if NFMW
+        /// <summary>Size of one vertex in the buffer, which is the layout's stride.</summary>
+        private const int VertexStride = 164;
+
+        private readonly IGraphicsDevice _device;
+        private VertexShape[] _vertices;
+        private uint[] _indices;
+        private int _triangleCount = 0;
+        private int _vertexCount = 0;
+        private int _indexCount = 0;
+
+        private IBuffer _vertexBuffer;
+        private IBuffer _indexBuffer;
+
+        // The frame's command buffer, when the host owns it. Null means Flush acquires its own,
+        // which is what Begin/End in isolation does. See Begin(ICommandBuffer, ...).
+        private ICommandBuffer? _frameCommandBuffer;
+
+        private readonly IShaderModule _shaderModule;
+        private readonly IPipelineState _pipeline;
+        private readonly apos_shapesSpriteBatchParameters _parameters;
+        private readonly ISampler _sampler;
+        private readonly ISampler _pointClamp;
+        private readonly ISampler _pointWrap;
+
+        private Matrix _view;
+        private Matrix _projection;
+        private readonly ITexture _blueNoise;
+        // Built the first time an ellipse is dashed, since nothing else reads it.
+        private ITexture? _ellipseArc;
+        // Glyph rows that were rasterized when no command buffer was live, kept as copies so a
+        // later flush can upload them. See GlyphAtlas.Sync.
+        private readonly List<GlyphUpload> _pendingGlyphUploads = new();
+#else
         private readonly GraphicsDevice _graphicsDevice;
         private VertexShape[] _vertices;
         private uint[] _indices;
@@ -3580,11 +3970,16 @@ namespace Apos.Shapes {
         private readonly Texture2D _blueNoise;
         // Built the first time an ellipse is dashed, since nothing else reads it.
         private Texture2D? _ellipseArc;
+#endif
         // This batch's own ramp table and the atlas that mirrors it lazily by row generation,
         // so recycled rows reupload exactly like new ones. Rows referenced since the last
         // flush stay pinned, so they can't be recycled out from under the quads that packed
         // them; PrepareQuad's pre-pin flushes early when all 256 are.
+#if NFMW
+        private ITexture? _rampAtlas;
+#else
         private Texture2D? _rampAtlas;
+#endif
         private readonly RampTable _ramps = new();
         private readonly int[] _rampGenUploaded = new int[256];
         private readonly List<int> _rampDirty = new();

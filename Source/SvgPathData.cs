@@ -1,7 +1,9 @@
 // The d attribute's grammar, and the basic shapes that are shorthand for one.
 
 using System;
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 
 namespace Apos.Shapes {
     internal static class SvgPathData {

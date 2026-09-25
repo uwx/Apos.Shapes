@@ -5,7 +5,9 @@
 
 using System;
 using System.Collections.Generic;
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 
 namespace Apos.Shapes {
     // One quadratic Bezier of an outline, in the font's design units. TrueType draws a contour

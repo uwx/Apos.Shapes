@@ -2,7 +2,9 @@
 
 using System;
 using System.Globalization;
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 
 namespace Apos.Shapes {
     // A cursor over a string of SVG numbers. The grammar is looser than any BCL parser takes:

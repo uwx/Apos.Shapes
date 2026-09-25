@@ -1,4 +1,6 @@
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 
 namespace Apos.Shapes {
     /// <summary>

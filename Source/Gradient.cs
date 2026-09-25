@@ -1,4 +1,10 @@
+#if NFMW
+using Maxine.Extensions.Mathematics;
+#endif
+
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 
 namespace Apos.Shapes {
     /// <summary>

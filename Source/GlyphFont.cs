@@ -7,7 +7,9 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 using StbTrueTypeSharp;
 
 namespace Apos.Shapes {

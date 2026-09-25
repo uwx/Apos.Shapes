@@ -1,4 +1,7 @@
-#if __KNIFX__
+#if FNA
+#define VS_SHADERMODEL vs_3_0
+#define PS_SHADERMODEL ps_3_0
+#elif __KNIFX__
 #define VS_SHADERMODEL vs_4_0
 #define PS_SHADERMODEL ps_4_0
 #elif OPENGL
@@ -89,7 +92,13 @@ struct VertexInput {
 // An SVG element's quad is a glyph quad in every one of those channels. All that sets it apart
 // is its shape id, which picks the even-odd fill rule at the end of the same arm.
 struct PixelInput {
-    float4 Position : SV_Position0;
+    // Bare SV_POSITION, not SV_Position0. The compiler's HlslSemantics only skips a semantic as a
+    // system value when it starts with "SV_", and glslang's HLSL front-end has no system value
+    // named SV_Position0 - so the suffixed spelling is taken for an ordinary user semantic, lands
+    // on location 0 alongside the input, and is emitted as a varying instead of the builtin
+    // gl_Position. The program still links and then rasterises nothing. Every other shader in this
+    // tree spells it SV_POSITION; see the pixel stage of Polygon.fx.
+    float4 Position : SV_POSITION;
     float4 TexCoord : TEXCOORD0; // xy: uv or local position, z: rounded, w: packed shape, gradient styles and color space.
     float4 Fill : TEXCOORD1; // Two colors, each repacked as two 11 bit channels per float.
     float4 Border : TEXCOORD2;

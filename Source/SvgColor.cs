@@ -3,7 +3,9 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 
 namespace Apos.Shapes {
     // What a fill or a stroke was set to. An absent property is not one of these: it inherits,

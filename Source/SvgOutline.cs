@@ -3,7 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+#if !NFMW
 using Microsoft.Xna.Framework;
+#endif
 
 namespace Apos.Shapes {
     // One quadratic in document units. Straight runs get a control point at the midpoint, which
