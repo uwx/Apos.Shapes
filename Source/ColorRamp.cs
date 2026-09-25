@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 #if !NFMW
 using Microsoft.Xna.Framework;
 #endif
@@ -48,6 +49,9 @@ namespace Apos.Shapes {
                 _colors[j + 1] = c;
             }
         }
+        
+        public IReadOnlyList<float> Positions => _pos;
+        public IReadOnlyList<Color> Colors => _colors;
 
         private readonly float[] _pos;
         private readonly Color[] _colors;
