@@ -15,7 +15,7 @@ namespace Apos.Shapes {
         /// <param name="min">The lower bound.</param>
         /// <param name="max">The upper bound.</param>
         /// <returns>The clamped value.</returns>
-        public static float Clamp(float value, float min, float max) => Math.Clamp(value, min, max);
+        public static float Clamp(float value, float min, float max) => min > max ? float.Clamp(value, max, min) : float.Clamp(value, min, max);
     }
 
     /// <summary>
