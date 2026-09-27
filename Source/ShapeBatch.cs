@@ -2788,9 +2788,9 @@ namespace Apos.Shapes {
             ArgumentNullException.ThrowIfNull(font);
             if (text.IsEmpty) return;
 
-            GlyphFont f = font.Font;
             // World units per design unit, which is what the font's own advances and kerning are
-            // measured in.
+            // measured in. Glyphs a fallback contributes are rescaled into these same units as
+            // they are resolved.
             float scale = size / font.UnitsPerEm;
             float lineHeight = font.LineHeight * size;
 
@@ -2815,6 +2815,7 @@ namespace Apos.Shapes {
             float lineStart = penX;
             var glyphScale = new Vector2(size, size);
             int prev = -1;
+            GlyphFont? prevOwner = null;
             for (int i = 0; i < text.Length;) {
                 int codePoint = ShapeFont.CodePointAt(text, i, out int step);
                 i += step;
@@ -2823,17 +2824,24 @@ namespace Apos.Shapes {
                     penX = lineStart;
                     penY += lineHeight;
                     prev = -1;
+                    prevOwner = null;
                     continue;
                 }
-                BakedGlyph g = f.Lookup(codePoint);
-                if (prev >= 0) penX += f.Kerning(prev, g.Glyph) * scale;
+                // The glyph may come out of a fallback font, so it carries an em of its own:
+                // em folds the outline into the primary's em, and the advance is rescaled the
+                // same way, since it is measured in the units of the font it came from.
+                BakedGlyph g = font.Resolve(codePoint, out float em, out GlyphFont? owner);
+                if (prev >= 0 && ReferenceEquals(owner, prevOwner)) {
+                    penX += owner!.Kerning(prev, g.Glyph) * scale * em;
+                }
                 if (g.HasOutline) {
                     var at = new Vector2(position.X + penX * cos - penY * sin,
                                          position.Y + penX * sin + penY * cos);
-                    DrawGlyphQuad(g, at, glyphScale, fill, sin, cos, aaSize);
+                    DrawGlyphQuad(g, at, glyphScale * em, fill, sin, cos, aaSize);
                 }
-                penX += g.Advance * scale;
+                penX += g.Advance * em * scale;
                 prev = g.Glyph;
+                prevOwner = owner;
             }
         }
         /// <summary>Draws a string. See the span overload.</summary>

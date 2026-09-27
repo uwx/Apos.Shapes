@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 #if !NFMW
@@ -20,6 +21,12 @@ namespace Apos.Shapes {
     /// Only TrueType outlines work. Most .otf files describe their glyphs with cubic curves in a
     /// CFF table instead, and this solver is quadratic only, so loading one throws.
     /// <see cref="TryLoad(byte[], out ShapeFont)"/> asks instead of throwing.
+    ///
+    /// A font only has the code points its file has. A code point it is missing draws the
+    /// font's own missing glyph, which is usually a box, so
+    /// <see cref="AddFallback(ShapeFont)"/> hands over another font to try instead. The fonts do
+    /// not have to agree on units per em: a glyph is rescaled into this font's em as it is
+    /// drawn, so every font in the chain lays out in the same one.
     ///
     /// Metrics are in em units: multiply by the size you draw at to get world units. Everything
     /// here is safe to call from any thread.
@@ -108,7 +115,7 @@ namespace Apos.Shapes {
         /// </summary>
         /// <param name="codePoint">A Unicode code point, not a UTF-16 char.</param>
         public float Advance(int codePoint) {
-            return _font.Lookup(codePoint).Advance / (float)UnitsPerEm;
+            return Resolve(codePoint, out float scale, out _).Advance * scale / (float)UnitsPerEm;
         }
 
         /// <summary>
@@ -119,7 +126,39 @@ namespace Apos.Shapes {
         /// <param name="left">The code point on the left.</param>
         /// <param name="right">The code point on the right.</param>
         public float Kerning(int left, int right) {
-            return _font.Kerning(_font.Lookup(left).Glyph, _font.Lookup(right).Glyph) / (float)UnitsPerEm;
+            // Kerning is a table of glyph index pairs, and an index only means anything inside
+            // the font it came from. A pair with a fallback in it is therefore left unkerned:
+            // the primary's table would be read at an index that is a different glyph there.
+            BakedGlyph l = Resolve(left, out _, out GlyphFont? lf);
+            BakedGlyph r = Resolve(right, out _, out GlyphFont? rf);
+            if (!ReferenceEquals(lf, _font) || !ReferenceEquals(rf, _font)) return 0f;
+            return _font.Kerning(l.Glyph, r.Glyph) / (float)UnitsPerEm;
+        }
+
+        // The glyph a code point draws as, and which font it comes from. The primary is asked
+        // first, then each fallback in turn, and the first font with a glyph wins. When nothing
+        // has one the primary's missing glyph is the answer, so the text still gets the advance
+        // and the box a font that has never heard of the code point would give it.
+        //
+        // The scale is the fallback's design units per primary unit, so a glyph baked out of
+        // another font lands in the same em the text is being laid out in.
+        internal BakedGlyph Resolve(int codePoint, out float scale, out GlyphFont? owner) {
+            if (_font.LookupOrNull(codePoint) is { } primary) {
+                scale = 1f;
+                owner = _font;
+                return primary;
+            }
+            for (int i = 0; i < _fallbacks.Count; i++) {
+                GlyphFont font = _fallbacks[i]._font;
+                if (font.LookupOrNull(codePoint) is { } glyph) {
+                    scale = (float)UnitsPerEm / font.UnitsPerEm;
+                    owner = font;
+                    return glyph;
+                }
+            }
+            scale = 1f;
+            owner = _font;
+            return _font.Glyph(0);
         }
 
         /// <summary>
@@ -139,6 +178,7 @@ namespace Apos.Shapes {
             float x = 0f;
             int lines = 1;
             int prev = -1;
+            GlyphFont? prevOwner = null;
             for (int i = 0; i < text.Length;) {
                 int cp = CodePointAt(text, i, out int step);
                 i += step;
@@ -148,12 +188,18 @@ namespace Apos.Shapes {
                     x = 0f;
                     lines++;
                     prev = -1;
+                    prevOwner = null;
                     continue;
                 }
-                BakedGlyph g = _font.Lookup(cp);
-                if (prev >= 0) x += _font.Kerning(prev, g.Glyph) * scale;
-                x += g.Advance * scale;
+                BakedGlyph g = Resolve(cp, out float glyphScale, out GlyphFont? owner);
+                // Kerning only ever applies between two glyphs of the same font, for the reason
+                // Kerning gives: an index outside the font it came from names a different glyph.
+                if (prev >= 0 && ReferenceEquals(owner, prevOwner)) {
+                    x += owner!.Kerning(prev, g.Glyph) * scale * glyphScale;
+                }
+                x += g.Advance * glyphScale * scale;
                 prev = g.Glyph;
+                prevOwner = owner;
             }
             if (x > widest) widest = x;
             return new Vector2(widest, lines * LineHeight * size);
@@ -163,6 +209,27 @@ namespace Apos.Shapes {
         /// <param name="size">Em size in world units, the same one the text is drawn at.</param>
         public Vector2 MeasureString(string text, float size) {
             return MeasureString(text.AsSpan(), size);
+        }
+
+        /// <summary>
+        /// Adds a font to try after this one, for the code points this font has no glyph for.
+        /// Fallbacks are tried in the order they were added, and one is only consulted once
+        /// every font before it has been asked and come back with nothing.
+        ///
+        /// The fallback is not owned: this does not dispose it, so the same font can stand
+        /// behind several others and has to outlive them.
+        /// </summary>
+        /// <param name="fallback">The font to try next.</param>
+        /// <returns>This font, so calls can be chained.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="fallback"/> is null.</exception>
+        public ShapeFont AddFallback(ShapeFont fallback) {
+            ArgumentNullException.ThrowIfNull(fallback);
+            // A font that cannot draw an outline would take the code point out of the hands of
+            // one that can, so it is left out. A font that has no glyph for anything is the
+            // same shape of mistake, and neither is worth throwing over.
+            if (!fallback._font.Quadratic) return this;
+            if (!ReferenceEquals(fallback, this)) _fallbacks.Add(fallback);
+            return this;
         }
 
         /// <summary>Releases the font file this holds. Text drawn before this still draws.</summary>
@@ -195,5 +262,9 @@ namespace Apos.Shapes {
         }
 
         private readonly GlyphFont _font;
+        // The fonts tried after this one, in order, when a code point has no glyph here. Held
+        // rather than owned: a fallback is a font in its own right that someone else loads and
+        // disposes, and the usual arrangement is one of them standing behind several primaries.
+        private readonly List<ShapeFont> _fallbacks = new();
     }
 }

@@ -97,6 +97,14 @@ namespace Apos.Shapes {
         // over one of these per character, so the code point gets a map of its own rather than
         // paying for the index lookup and the glyph lookup apart.
         internal BakedGlyph Lookup(int codePoint) {
+            return LookupOrNull(codePoint) ?? Glyph(0);
+        }
+
+        // The baked glyph a code point maps to, or null when this font has no glyph for it at
+        // all. A font that draws nothing for a code point still has one for a space, so the two
+        // are told apart by the index: glyph 0 is the font's missing glyph, and a hit on it is
+        // what says nothing here can draw this code point.
+        internal BakedGlyph? LookupOrNull(int codePoint) {
             lock (_gate) {
                 if (_byCodePoint.TryGetValue(codePoint, out BakedGlyph? baked)) return baked;
                 if (!_indices.TryGetValue(codePoint, out int index)) {
@@ -105,6 +113,7 @@ namespace Apos.Shapes {
                     }
                     _indices[codePoint] = index;
                 }
+                if (index == 0) return null;
                 if (!_glyphs.TryGetValue(index, out baked)) {
                     baked = Bake(index);
                     _glyphs[index] = baked;
