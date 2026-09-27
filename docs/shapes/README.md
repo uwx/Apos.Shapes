@@ -153,6 +153,60 @@ _sb.FillPath([new Vector2(120, 40), new Vector2(220, 130), new Vector2(20, 130)]
 
 ![A closed triangular path with mitered joints](path-closed.png)
 
+### Shapes with curves
+
+Everything above strokes a polyline. A `ShapePath` is the other half: a shape built from canvas style commands, with real curves, that can be both filled and stroked.
+
+Build one from the batch with the curve commands chained onto it, then `Build()`:
+
+```csharp
+ShapePath heart = _sb.ShapePath()
+    .MoveTo(new Vector2(0, -40))
+    .CubicTo(new Vector2(0, -70), new Vector2(-50, -70), new Vector2(-50, -35))
+    .CubicTo(new Vector2(-50, -10), new Vector2(-20, 20), new Vector2(0, 45))
+    .CubicTo(new Vector2(20, 20), new Vector2(50, -10), new Vector2(50, -35))
+    .CubicTo(new Vector2(50, -70), new Vector2(0, -70), new Vector2(0, -40))
+    .Close()
+    .Build();
+```
+
+The commands are `MoveTo`, `LineTo`, `QuadTo`, `CubicTo`, `ArcTo`, `Close` and `MarkHole`, and they read the way a canvas's do. `ArcTo` takes the end point, the two radii, the ellipse's rotation in degrees, and the two flags that pick which arc through the points is meant — the same form SVG writes an arc in.
+
+Coordinates are y down, the way a document and the world are, so a path a hundred units tall grows downward from its first point. Nothing is positioned until it is drawn, so the same path can be drawn anywhere, at any size, as many times as you like. Building a path touches no device, so build the ones that never change once and keep them.
+
+`DrawShape` fills and strokes in one call, with the two paints independent:
+
+```csharp
+_sb.DrawShape(heart, new Vector2(400, 300), Color.Crimson, Color.White, strokeWidth: 5f, rotation: 0.2f, size: 1.6f);
+```
+
+`FillShape` and `StrokeShape` each do one of the two on their own, taking the same joins, caps, miter limit and dashes a polyline stroke does:
+
+```csharp
+_sb.FillShape(heart, Color.Crimson);
+_sb.StrokeShape(heart, Color.White, strokeWidth: 5f, join: PathJoin.Round, cap: PathCap.Round);
+```
+
+The fill goes through the same solver the text and the SVG drawings use, so a curve stays exact at any size rather than being flattened into segments. `size` is world units per path unit; the stroke width is in path units too, so it scales with the shape.
+
+A path is filled by the nonzero rule unless it was built with `FillRule.EvenOdd`. That is what decides how a path that crosses itself fills: a five pointed star drawn as one outline fills solid under nonzero and leaves a pentagon under even-odd. `MarkHole` is the other way to make a hole, and the one to use when the inner subpath is not a separate shape:
+
+```csharp
+ShapePath ring = _sb.ShapePath()
+    .MoveTo(new Vector2(50, 0))
+    .ArcTo(new Vector2(-50, 0), 50, 50, 0, largeArc: false, sweep: true)
+    .Close()
+    .MarkHole()
+    .MoveTo(new Vector2(28, 0))
+    .ArcTo(new Vector2(-28, 0), 28, 28, 0, largeArc: false, sweep: true)
+    .Close()
+    .Build();
+```
+
+A marked subpath is forced to wind the other way from the one before it, so it subtracts. A region that is already wound that way is left alone, which is why `MarkHole` is safe to ask for on a border built from an outer ring and an inner one.
+
+The same path can also be written as a run of calls on the batch instead of one chain, when it is built inside a loop. Start it with `BeginShapePath`, feed it with `ShapeMoveTo`, `ShapeLineTo`, `ShapeQuadTo`, `ShapeCubicTo`, `ShapeArcTo`, `ShapeClose` and `ShapeMarkHole`, and finish it with `EndShapePath`, which hands back the `ShapePath`. The fill, stroke and draw calls then take that path, or use the overloads that take none and draw whatever `EndShapePath` finished last.
+
 ## Rectangle
 
 A rectangle is defined by its top left corner and a size.

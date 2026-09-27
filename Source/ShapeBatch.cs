@@ -3140,11 +3140,296 @@ namespace Apos.Shapes {
             if (_pathOpen) {
                 throw new InvalidOperationException("EndPath or ClosePath must be called before calling End.");
             }
+            if (_shapePath != null) {
+                throw new InvalidOperationException("EndShapePath must be called before calling End.");
+            }
             _beginCalled = false;
 
             Flush();
 
             // TODO: Restore old states like rasterizer, depth stencil, blend state?
+        }
+
+        /// <summary>
+        /// Starts a path and hands back the object its commands are written on. Every command
+        /// returns it, so a path is one chain, and <see cref="ShapePathBuilder.Build"/> finishes
+        /// it into a <see cref="ShapePath"/> the fill, stroke and draw calls take.
+        ///
+        /// Building a path touches no device and no batch, so this works before <c>Begin</c> and
+        /// the same path can be built once and drawn by any number of batches. The coordinates go
+        /// in as written, y down; the batch is only told where the first point goes when the path
+        /// is drawn.
+        /// </summary>
+        /// <param name="fillRule">Which side of the outline counts as inside.</param>
+        public ShapePathBuilder ShapePath(FillRule fillRule = FillRule.NonZero) {
+            return new ShapePathBuilder(fillRule, ShapeSvg.DefaultTolerance);
+        }
+
+        /// <summary>
+        /// Starts a path whose commands go through the <c>Shape*</c> methods on this batch,
+        /// for when a path is written as a run of calls rather than one chain. The path the
+        /// commands build is handed back by <see cref="EndShapePath"/>.
+        /// </summary>
+        /// <param name="fillRule">Which side of the outline counts as inside.</param>
+        /// <exception cref="InvalidOperationException">Begin was never called, or a path is already open.</exception>
+        public void BeginShapePath(FillRule fillRule = FillRule.NonZero) {
+            if (!_beginCalled) {
+                throw new InvalidOperationException("Begin must be called before starting a path.");
+            }
+            if (_shapePath != null) {
+                throw new InvalidOperationException("EndShapePath must be called before starting another path.");
+            }
+            _shapePath = new ShapePathBuilder(fillRule, ShapeSvg.DefaultTolerance);
+        }
+
+        /// <summary>Whether a path started by <see cref="BeginShapePath"/> is still waiting to be finished.</summary>
+        public bool HasOpenShapePath => _shapePath != null;
+
+        /// <summary>The current subpath starts here. See <see cref="ShapePathBuilder.MoveTo"/>.</summary>
+        /// <param name="p">The point, in path coordinates.</param>
+        public void ShapeMoveTo(Vector2 p) {
+            OpenShape().MoveTo(p);
+        }
+
+        /// <summary>A straight run to a point. See <see cref="ShapePathBuilder.LineTo"/>.</summary>
+        /// <param name="p">The point, in path coordinates.</param>
+        public void ShapeLineTo(Vector2 p) {
+            OpenShape().LineTo(p);
+        }
+
+        /// <summary>A quadratic Bezier. See <see cref="ShapePathBuilder.QuadTo"/>.</summary>
+        /// <param name="c">The control point, in path coordinates.</param>
+        /// <param name="p">The end point, in path coordinates.</param>
+        public void ShapeQuadTo(Vector2 c, Vector2 p) {
+            OpenShape().QuadTo(c, p);
+        }
+
+        /// <summary>A cubic Bezier. See <see cref="ShapePathBuilder.CubicTo"/>.</summary>
+        /// <param name="c1">The first control point, in path coordinates.</param>
+        /// <param name="c2">The second control point, in path coordinates.</param>
+        /// <param name="p">The end point, in path coordinates.</param>
+        public void ShapeCubicTo(Vector2 c1, Vector2 c2, Vector2 p) {
+            OpenShape().CubicTo(c1, c2, p);
+        }
+
+        /// <summary>An elliptical arc. See <see cref="ShapePathBuilder.ArcTo"/>.</summary>
+        /// <param name="p">Where the arc ends, in path coordinates.</param>
+        /// <param name="rx">The ellipse's x radius.</param>
+        /// <param name="ry">The ellipse's y radius.</param>
+        /// <param name="rotation">The ellipse's rotation in degrees.</param>
+        /// <param name="largeArc">True to take the arc going the long way round.</param>
+        /// <param name="sweep">True to sweep the way a clock's hands go.</param>
+        public void ShapeArcTo(Vector2 p, float rx, float ry, float rotation, bool largeArc, bool sweep) {
+            OpenShape().ArcTo(p, rx, ry, rotation, largeArc, sweep);
+        }
+
+        /// <summary>Closes the current subpath. See <see cref="ShapePathBuilder.Close"/>.</summary>
+        public void ShapeClose() {
+            OpenShape().Close();
+        }
+
+        /// <summary>Makes the subpath being built a hole. See <see cref="ShapePathBuilder.MarkHole"/>.</summary>
+        public void ShapeMarkHole() {
+            OpenShape().MarkHole();
+        }
+
+        /// <summary>
+        /// Finishes the path <see cref="BeginShapePath"/> or <see cref="ShapePath"/> started and
+        /// hands it back. It is also remembered as the current path, so the
+        /// fill, stroke and draw overloads that take no path use it.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">No path is open.</exception>
+        public ShapePath EndShapePath() {
+            ShapePathBuilder builder = OpenShape();
+            _shapePath = null;
+            _currentShape = builder.Build();
+            return _currentShape;
+        }
+
+        /// <summary>Paints the inside of a path. Nothing is drawn for an empty one.</summary>
+        /// <param name="path">The path to fill.</param>
+        /// <param name="paint">Color or gradient to fill with, in world coordinates.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="path"/> is null.</exception>
+        /// <exception cref="InvalidOperationException">Begin was never called.</exception>
+        public void FillShape(ShapePath path, Gradient paint, float aaSize = 1.5f) {
+            DrawShapeCore(path, Vector2.Zero, paint, default, 0f, 0f, Vector2.Zero, 1f, aaSize, doFill: true, doStroke: false);
+        }
+
+        /// <summary>Outlines a path, with nothing inside it. See the overload that takes a path.</summary>
+        /// <param name="path">The path to stroke.</param>
+        /// <param name="paint">Color or gradient of the stroke, in world coordinates.</param>
+        /// <param name="strokeWidth">Thickness of the stroke, in path units.</param>
+        /// <param name="join">How segments connect at a joint.</param>
+        /// <param name="cap">How the path starts, and how it ends unless the path is closed.</param>
+        /// <param name="miterLimit">Miters sharper than this fall back to bevel, measured like SVG's miterlimit.</param>
+        /// <param name="dash">Cuts the stroke into dashes along the path.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="path"/> is null.</exception>
+        /// <exception cref="InvalidOperationException">Begin was never called.</exception>
+        public void StrokeShape(ShapePath path, Gradient paint, float strokeWidth, PathJoin join = PathJoin.Round, PathCap cap = PathCap.Round, float miterLimit = 4f, DashStyle dash = default, float aaSize = 1.5f) {
+            DrawShapeCore(path, Vector2.Zero, default, paint, strokeWidth, 0f, Vector2.Zero, 1f, aaSize, doFill: false, doStroke: true, join, cap, miterLimit, dash);
+        }
+
+        /// <summary>Same as <see cref="StrokeShape(ShapePath, Gradient, float, PathJoin, PathCap, float, DashStyle, float)"/>, with the width as a radius.</summary>
+        /// <param name="path">The path to stroke.</param>
+        /// <param name="paint">Color or gradient of the stroke, in world coordinates.</param>
+        /// <param name="radius">Half the stroke's thickness, in path units.</param>
+        /// <param name="join">How segments connect at a joint.</param>
+        /// <param name="cap">How the path starts, and how it ends unless the path is closed.</param>
+        /// <param name="miterLimit">Miters sharper than this fall back to bevel, measured like SVG's miterlimit.</param>
+        /// <param name="dash">Cuts the stroke into dashes along the path.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="path"/> is null.</exception>
+        /// <exception cref="InvalidOperationException">Begin was never called.</exception>
+        public void StrokeShapeRadius(ShapePath path, Gradient paint, float radius, PathJoin join = PathJoin.Round, PathCap cap = PathCap.Round, float miterLimit = 4f, DashStyle dash = default, float aaSize = 1.5f) {
+            DrawShapeCore(path, Vector2.Zero, default, paint, radius, 0f, Vector2.Zero, 1f, aaSize, doFill: false, doStroke: true, join, cap, miterLimit, dash, radiusGiven: true);
+        }
+
+        /// <summary>
+        /// Fills and strokes a path at once, moved to <paramref name="position"/> and turned
+        /// around it. The two paints are independent, so either can be transparent to draw only
+        /// the other.
+        /// </summary>
+        /// <param name="path">The path to draw.</param>
+        /// <param name="position">Where the path's own origin lands, in world units.</param>
+        /// <param name="fill">Color or gradient of the inside, in world coordinates.</param>
+        /// <param name="stroke">Color or gradient of the outline, in world coordinates.</param>
+        /// <param name="strokeWidth">Thickness of the stroke, in path units.</param>
+        /// <param name="rotation">Angle in radians, turned around <paramref name="position"/>.</param>
+        /// <param name="origin">The point rotation turns around, in world units out from <paramref name="position"/>.</param>
+        /// <param name="size">World units per path unit.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="path"/> is null.</exception>
+        /// <exception cref="InvalidOperationException">Begin was never called.</exception>
+        public void DrawShape(ShapePath path, Vector2 position, Gradient fill, Gradient stroke, float strokeWidth, float rotation = 0f, Vector2 origin = default, float size = 1f, float aaSize = 1.5f) {
+            DrawShapeCore(path, position, fill, stroke, strokeWidth, rotation, origin, size, aaSize, doFill: true, doStroke: true);
+        }
+
+        /// <summary>Fills the path the last <see cref="EndShapePath"/> finished, at its own origin. See the overload that takes a path.</summary>
+        /// <param name="paint">Color or gradient to fill with, in world coordinates.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
+        public void FillShape(Gradient paint, float aaSize = 1.5f) => FillShape(CurrentShape(), paint, aaSize);
+
+        /// <summary>Strokes the path the last <see cref="EndShapePath"/> finished, at its own origin. See the overload that takes a path.</summary>
+        /// <param name="paint">Color or gradient of the stroke, in world coordinates.</param>
+        /// <param name="strokeWidth">Thickness of the stroke, in path units.</param>
+        /// <param name="join">How segments connect at a joint.</param>
+        /// <param name="cap">How the path starts, and how it ends unless the path is closed.</param>
+        /// <param name="miterLimit">Miters sharper than this fall back to bevel, measured like SVG's miterlimit.</param>
+        /// <param name="dash">Cuts the stroke into dashes along the path.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
+        public void StrokeShape(Gradient paint, float strokeWidth, PathJoin join = PathJoin.Round, PathCap cap = PathCap.Round, float miterLimit = 4f, DashStyle dash = default, float aaSize = 1.5f) {
+            StrokeShape(CurrentShape(), paint, strokeWidth, join, cap, miterLimit, dash, aaSize);
+        }
+
+        /// <summary>Draws the path the last <see cref="EndShapePath"/> finished. See the overload that takes a path.</summary>
+        /// <param name="position">Where the path's own origin lands, in world units.</param>
+        /// <param name="fill">Color or gradient of the inside, in world coordinates.</param>
+        /// <param name="stroke">Color or gradient of the outline, in world coordinates.</param>
+        /// <param name="strokeWidth">Thickness of the stroke, in path units.</param>
+        /// <param name="rotation">Angle in radians, turned around <paramref name="position"/>.</param>
+        /// <param name="origin">The point rotation turns around, in world units out from <paramref name="position"/>.</param>
+        /// <param name="size">World units per path unit.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
+        public void DrawShape(Vector2 position, Gradient fill, Gradient stroke, float strokeWidth, float rotation = 0f, Vector2 origin = default, float size = 1f, float aaSize = 1.5f) {
+            DrawShape(CurrentShape(), position, fill, stroke, strokeWidth, rotation, origin, size, aaSize);
+        }
+
+        private ShapePathBuilder OpenShape() {
+            if (_shapePath == null) {
+                throw new InvalidOperationException("BeginShapePath must be called before a path command.");
+            }
+            return _shapePath;
+        }
+
+        private ShapePath CurrentShape() {
+            if (_currentShape == null) {
+                throw new InvalidOperationException("EndShapePath must be called before drawing a path.");
+            }
+            return _currentShape;
+        }
+
+        // One path, filled and stroked. The fill goes through the glyph solver, which is the same
+        // one text and drawings use: the quad carries the curve addresses and the pixel shader
+        // solves the coverage, so the outline stays exact at any size and sits in the same draw
+        // call as everything else. The stroke goes through the path renderer, flattened first.
+        //
+        // Nothing here throws on the draw path, the same way drawings and text don't: a path with
+        // no geometry draws nothing, and so does a stroke of no width. The one exception is a
+        // caller who never called Begin, which is a mistake worth hearing about.
+        private void DrawShapeCore(ShapePath path, Vector2 position, Gradient fill, Gradient stroke, float strokeWidth,
+                                   float rotation, Vector2 origin, float size, float aaSize, bool doFill, bool doStroke,
+                                   PathJoin join = PathJoin.Round, PathCap cap = PathCap.Round, float miterLimit = 4f,
+                                   DashStyle dash = default, bool radiusGiven = false) {
+            ArgumentNullException.ThrowIfNull(path);
+            if (!_beginCalled) {
+                throw new InvalidOperationException("Begin must be called before drawing.");
+            }
+            if (path.IsEmpty || (!doFill && !doStroke)) return;
+
+            float sin = 0f;
+            float cos = 1f;
+            if (rotation != 0f) {
+                (sin, cos) = SinCos(rotation);
+            }
+
+            // Rotation turns the path about the point `origin` out from `position`. Folding that
+            // pivot into one center lets both halves share a single mapping - a path point q
+            // lands at center + R(q * size) - rather than each carrying the pivot its own way.
+            // A glyph quad turns about the position it is handed and knows nothing of an origin,
+            // and the stroke's flatten is in path units where a corner helper does.
+            var center = position + origin - Rotate(origin, Vector2.Zero, sin, cos);
+
+            if (doFill) {
+                BakedGlyph? g = path.Bake();
+                if (g != null) {
+                    // The bake is measured once in the path's own units, so the em scale the quad
+                    // carries is that unit scaled by how big the path is drawn. A local gradient
+                    // is read from the center and turns with the path, which DrawGlyphQuad
+                    // resolves for us.
+                    if (fill.IsLocal) {
+                        GradientToWorld(ref fill, center, Vector2.Zero, sin, cos);
+                    }
+                    var shapeScale = new Vector2(size * path.Em, size * path.Em);
+                    DrawGlyphQuad(g, center, shapeScale, fill, sin, cos, aaSize,
+                                  path.FillRule == FillRule.EvenOdd ? VertexShape.Shape.EvenOdd : VertexShape.Shape.Glyph);
+                }
+            }
+
+            if (!doStroke) return;
+            // The width is in path units, so it scales with the drawing the same way the geometry
+            // does. Zero or negative is a stroke of nothing, not a mistake.
+            float radius = radiusGiven ? MathF.Abs(strokeWidth) : MathF.Abs(strokeWidth) * 0.5f;
+            radius *= MathF.Abs(size);
+            if (!(radius > 0f)) return;
+            DashStyle strokeDash = dash;
+            if (strokeDash.Size > 0f || strokeDash.Spacing > 0f) {
+                // A world unit pattern is written in path units here, so it rides the same scale
+                // the geometry does. A repeat count pattern is scale free and goes through as is.
+                strokeDash = new DashStyle(strokeDash.Size * size, strokeDash.Spacing * size, strokeDash.Offset, strokeDash.Cap, strokeDash.Snap);
+            }
+
+            // A quarter of a world unit at the size it is drawn, which keeps a flattened curve
+            // smooth when the path is scaled up and cheap when it is not.
+            float tol = 0.25f / MathF.Max(MathF.Abs(size), 1e-6f);
+            var buffer = _shapeFlatten;
+            for (int i = 0; i < path.Outline.SubpathCount; i++) {
+                buffer.Clear();
+                path.Outline.Flatten(i, buffer, tol);
+                if (buffer.Count < 2) continue;
+                Span<Vector2> pts = Scratch(ref _shapePoints, buffer.Count);
+                for (int j = 0; j < buffer.Count; j++) {
+                    // The same mapping the fill's quad uses: scale, turn, move to the center. Path
+                    // coordinates are y down already, so unlike the y up em frame the corner helper
+                    // is written for, nothing is flipped. Going through GlyphCorner or SvgToWorld
+                    // would mirror the stroke against the fill.
+                    Vector2 q = buffer[j] * size;
+                    pts[j] = new Vector2(center.X + q.X * cos - q.Y * sin,
+                                         center.Y + q.X * sin + q.Y * cos);
+                }
+                FillPath(pts, radius, stroke, join, cap, null, miterLimit, aaSize, path.Closed[i], strokeDash);
+            }
         }
 
         /// <summary>Releases the buffers and textures this batch owns.</summary>
@@ -4019,9 +4304,19 @@ namespace Apos.Shapes {
         // An SVG stroke's polyline mapped into the world, kept apart from the one above because
         // the path renderer copies out of this one and into that one.
         private Vector2[] _svgPoints = [];
+        // A hand built shape's stroke, mapped into the world, kept apart from both for the same
+        // reason _svgPoints is apart from _scratchPoints. The flatten list beside it is reused
+        // across subpaths and draws for the same reason the arrays are.
+        private Vector2[] _shapePoints = [];
+        private readonly List<Vector2> _shapeFlatten = new();
         private float[] _scratchRadii = [];
         private PathJoin[] _scratchJoins = [];
         private PathJoint[] _scratchJoints = [];
+
+        // The path being built through BeginShapePath/ShapeMoveTo/EndShapePath, and the one the
+        // last EndShapePath finished, which the path-less draw overloads use.
+        private ShapePathBuilder? _shapePath;
+        private ShapePath? _currentShape;
 
         // Streaming path state for BeginPath/PathTo/EndPath. The point buffer is reused across paths.
         private PathPoint[] _pathPoints = new PathPoint[64];

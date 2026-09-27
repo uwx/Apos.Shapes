@@ -55,6 +55,11 @@ namespace Apos.Shapes {
 
         internal int SubpathCount => Starts.Count;
 
+        // The subpath a command would extend right now, or -1 when none is open. A hand built
+        // path uses this to know which subpath a MarkHole is talking about, since the SVG parser
+        // is the only other caller and it never marks one.
+        internal int OpenSubpath => _open >= 0 ? Starts.Count - 1 : -1;
+
         internal void MoveTo(Vector2 p) {
             EndSubpath();
             Current = p;

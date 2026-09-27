@@ -69,6 +69,11 @@ internal static class Program
 
         using var shapes = new ShapeBatch(device);
 
+        // Building a path touches no device, so the scene's paths are built once here and only
+        // redrawn each frame. That is the point of the split: a path is geometry, and drawing it
+        // is a separate act that can happen any number of times at any size.
+        var paths = BuildPaths(shapes);
+
         for (var frame = 0; frame < Frames && !host.ShouldQuit; frame++)
         {
             host.PumpEvents();
@@ -87,7 +92,7 @@ internal static class Program
 
             var t = frame / 60f;
             shapes.Begin(cb);
-            DrawScene(shapes, svg, font, t);
+            DrawScene(shapes, svg, font, paths, t);
             shapes.End();
 
             device.Submit(cb);
@@ -98,7 +103,7 @@ internal static class Program
         return 0;
     }
 
-    private static void DrawScene(ShapeBatch sb, ShapeSvg svg, ShapeFont font, float t)
+    private static void DrawScene(ShapeBatch sb, ShapeSvg svg, ShapeFont font, ScenePaths paths, float t)
     {
         // Shapes, the way the game example lays them out: each family in its own row, with the
         // fill, the border and the dashed variant side by side.
@@ -147,6 +152,79 @@ internal static class Program
         sb.DrawSvg(svg, new Vector2(560f, 430f), 220f, new Gradient(
             new Vector2(560f, 430f), Color.OrangeRed,
             new Vector2(780f, 650f), Color.MediumSpringGreen), rotation: -MathF.Sin(t) * 0.15f);
+
+        DrawShapePaths(sb, paths, t);
+    }
+
+    // The paths the scene draws. Built once, outside the frame loop.
+    private readonly record struct ScenePaths(
+        ShapePath Heart, ShapePath Ring, ShapePath Star, ShapePath StarEvenOdd);
+
+    private static ScenePaths BuildPaths(ShapeBatch sb)
+    {
+        // A heart, all cubics. The batch is not needed to build it - ShapePath is geometry, and
+        // the batch is only told where to put it when it is drawn.
+        ShapePath heart = sb.ShapePath()
+            .MoveTo(new Vector2(0f, -40f))
+            .CubicTo(new Vector2(0f, -70f), new Vector2(-50f, -70f), new Vector2(-50f, -35f))
+            .CubicTo(new Vector2(-50f, -10f), new Vector2(-20f, 20f), new Vector2(0f, 45f))
+            .CubicTo(new Vector2(20f, 20f), new Vector2(50f, -10f), new Vector2(50f, -35f))
+            .CubicTo(new Vector2(50f, -70f), new Vector2(0f, -70f), new Vector2(0f, -40f))
+            .Close()
+            .Build();
+
+        // A ring: an outer circle and a hole inside it, under the default nonzero rule. A circle
+        // is two half arcs - one arc between two opposite points is a half circle, and the Close
+        // that would finish it is a chord across it, not the other half.
+        ShapePath ring = sb.ShapePath()
+            .MoveTo(new Vector2(50f, 0f))
+            .ArcTo(new Vector2(-50f, 0f), 50f, 50f, 0f, largeArc: false, sweep: true)
+            .ArcTo(new Vector2(50f, 0f), 50f, 50f, 0f, largeArc: false, sweep: true)
+            .Close()
+            .MarkHole()
+            .MoveTo(new Vector2(28f, 0f))
+            .ArcTo(new Vector2(-28f, 0f), 28f, 28f, 0f, largeArc: false, sweep: true)
+            .ArcTo(new Vector2(28f, 0f), 28f, 28f, 0f, largeArc: false, sweep: true)
+            .Close()
+            .Build();
+
+        // The same star twice, so the two fill rules are side by side. A self intersecting path
+        // fills solid under nonzero and leaves a pentagon under even-odd.
+        ShapePath star = Star(sb, FillRule.NonZero);
+        ShapePath starEvenOdd = Star(sb, FillRule.EvenOdd);
+
+        return new ScenePaths(heart, ring, star, starEvenOdd);
+    }
+
+    private static void DrawShapePaths(ShapeBatch sb, ScenePaths p, float t)
+    {
+        sb.DrawShape(p.Heart, new Vector2(820f, 480f), Color.Crimson, Color.White, strokeWidth: 5f,
+            rotation: MathF.Sin(t) * 0.25f, size: 1.6f);
+
+        sb.DrawShape(p.Ring, new Vector2(1020f, 480f), Color.Gold, Color.Black, strokeWidth: 4f, size: 1.2f);
+
+        sb.FillShape(p.Star, Color.DeepSkyBlue);
+        sb.StrokeShape(p.Star, Color.White, strokeWidth: 2f);
+        sb.DrawShape(p.StarEvenOdd, new Vector2(1180f, 480f), Color.MediumOrchid, Color.White, strokeWidth: 2f, size: 1f);
+
+        // Stroking works on any of them, with the same joins, caps and dashes a hand written
+        // polyline stroke gets.
+        sb.StrokeShape(p.Heart, Color.LightGoldenrodYellow, strokeWidth: 3f, cap: PathCap.Round);
+    }
+
+    // A five pointed star as one self intersecting polygon, which is what tells the two fill
+    // rules apart.
+    private static ShapePath Star(ShapeBatch sb, FillRule rule)
+    {
+        ShapePathBuilder b = sb.ShapePath(rule);
+        for (int i = 0; i < 5; i++)
+        {
+            float angle = -MathF.PI / 2f + i * 4f * MathF.PI / 5f;
+            var p = new Vector2(MathF.Cos(angle) * 50f, MathF.Sin(angle) * 50f);
+            if (i == 0) b.MoveTo(p);
+            else b.LineTo(p);
+        }
+        return b.Close().Build();
     }
 
     // A document with a few element kinds in it - a rounded rect with a stroke, a circle and a

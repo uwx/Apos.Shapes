@@ -162,16 +162,6 @@ namespace Apos.Shapes {
         private readonly List<string> _skippedNames = new();
         private int _skipped;
 
-        // Design units the fill baker is fed. Any grid works, since the baker divides by the same
-        // number to get em units back; 2048 is what a TrueType font uses and keeps the integer
-        // band box from quantizing anything visible.
-        private const int Grid = 2048;
-        // How far out of the em square an element's own control points may reach. The curve
-        // texture holds them as fixed point over [-2, 2] on the KNI targets and the pad curve
-        // every short band list is filled out with sits at -1.5, so an element wider than this
-        // is dropped rather than drawn wrong.
-        private const float EmReach = 1.2f;
-
         private void Load(Stream stream, float tolerance) {
             try {
                 using XmlReader reader = XmlReader.Create(stream, Settings());
@@ -640,60 +630,13 @@ namespace Apos.Shapes {
             return true;
         }
 
-        // The element's fill through the glyph baker. Document units go to a pseudo design unit
-        // grid: divided by the viewBox height so one em is that height, y negated so the outline
-        // lands in the y up frame a glyph's does, moved so the element's own box is centered on
-        // its origin, and multiplied by the grid.
+        // The element's fill through the shared baker, with the design frame's zero put where this
+        // element's own origin is in the document.
         private BakedGlyph? Bake(SvgOutline o, Vector2 origin, float u, Vector2 vbMin, int index) {
-            float k = Grid / u;
-            float ox = (vbMin.X * (1f / u) + origin.X) * Grid;
-            float oy = (vbMin.Y * (1f / u) - origin.Y) * Grid;
-            Vector2 Design(Vector2 q) => new(q.X * k - ox, oy - q.Y * k);
-
-            var curves = new List<GlyphCurve>();
-            float lo = float.MaxValue, hi = float.MinValue, lox = float.MaxValue, hix = float.MinValue;
-            void Grow(Vector2 d) {
-                if (d.X < lox) lox = d.X;
-                if (d.X > hix) hix = d.X;
-                if (d.Y < lo) lo = d.Y;
-                if (d.Y > hi) hi = d.Y;
-            }
-
-            for (int s = 0; s < o.SubpathCount; s++) {
-                int start = o.Starts[s];
-                int count = o.Counts[s];
-                if (count == 0) continue;
-                Vector2 first = default, last = default;
-                for (int i = 0; i < count; i++) {
-                    SvgQuad q = o.Quads[start + i];
-                    Vector2 p1 = Design(q.P1);
-                    Vector2 p2 = Design(q.P2);
-                    Vector2 p3 = Design(q.P3);
-                    if (i == 0) first = p1;
-                    last = p3;
-                    Grow(p1);
-                    Grow(p2);
-                    Grow(p3);
-                    curves.Add(new GlyphCurve { P1 = p1, P2 = p2, P3 = p3 });
-                }
-                // Every subpath is closed for filling, whether or not a Z said so.
-                if (last != first) {
-                    curves.Add(new GlyphCurve { P1 = last, P2 = (last + first) * 0.5f, P3 = first });
-                }
-            }
-            if (curves.Count == 0) return null;
-
-            float reach = Grid * EmReach;
-            if (!(lox >= -reach) || !(hix <= reach) || !(lo >= -reach) || !(hi <= reach)) {
-                Drop("oversized element");
-                return null;
-            }
-
-            int x1 = (int)MathF.Floor(lox);
-            int y1 = (int)MathF.Floor(lo);
-            int x2 = (int)MathF.Ceiling(hix);
-            int y2 = (int)MathF.Ceiling(hi);
-            return GlyphBake.Bake(curves, index, 0, 0, x1, y1, x2, y2, Grid, GlyphBake.MaxCurves);
+            Vector2 originEm = new(vbMin.X * (1f / u) + origin.X, vbMin.Y * (1f / u) - origin.Y);
+            BakedGlyph? g = SvgBake.Bake(o, index, u, originEm, out bool oversized);
+            if (oversized) Drop("oversized element");
+            return g;
         }
     }
 }

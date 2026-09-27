@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
-- Nothing yet!
+### Added
+
+- `ShapePath`: a shape built from canvas style path commands (`MoveTo`, `LineTo`, `QuadTo`, `CubicTo`, `ArcTo`, `Close`, `MarkHole`), filled by the glyph solver and stroked through the path renderer. Build one with `ShapeBatch.ShapePath()` or `BeginShapePath`, and draw it with `FillShape`, `StrokeShape` or `DrawShape`. It takes a `FillRule` of `NonZero` or `EvenOdd`.
 
 ## [0.8.5] - 2026-09-07
 
