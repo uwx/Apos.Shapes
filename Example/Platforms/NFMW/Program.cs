@@ -203,13 +203,26 @@ internal static class Program
 
         sb.DrawShape(p.Ring, new Vector2(1020f, 480f), Color.Gold, Color.Black, strokeWidth: 4f, size: 1.2f);
 
-        sb.FillShape(p.Star, Color.DeepSkyBlue);
-        sb.StrokeShape(p.Star, Color.White, strokeWidth: 2f);
+        sb.DrawShape(p.Star, new Vector2(890f, 640f), Color.DeepSkyBlue, Color.White, strokeWidth: 2f);
         sb.DrawShape(p.StarEvenOdd, new Vector2(1180f, 480f), Color.MediumOrchid, Color.White, strokeWidth: 2f, size: 1f);
 
-        // Stroking works on any of them, with the same joins, caps and dashes a hand written
-        // polyline stroke gets.
-        sb.StrokeShape(p.Heart, Color.LightGoldenrodYellow, strokeWidth: 3f, cap: PathCap.Round);
+        // FillShape and StrokeShape place nothing: they paint a path where it was written, the way
+        // FillPath draws the points it is handed. So this star is authored in the coordinates it
+        // belongs at, the way the game's path calls are. It goes through the batch's own commands
+        // rather than a chained builder, which is the flow for a path that changes every frame -
+        // the ones above never do, so they are built once outside the loop.
+        sb.BeginShapePath();
+        for (int i = 0; i < 5; i++)
+        {
+            float angle = -MathF.PI / 2f + i * 4f * MathF.PI / 5f;
+            var q = new Vector2(105f + MathF.Cos(angle) * 40f, 645f + MathF.Sin(angle) * 40f);
+            if (i == 0) sb.ShapeMoveTo(q);
+            else sb.ShapeLineTo(q);
+        }
+        sb.ShapeClose();
+        sb.EndShapePath();
+        sb.FillShape(Color.LightGoldenrodYellow);
+        sb.StrokeShape(Color.White, strokeWidth: 2f, cap: PathCap.Round);
     }
 
     // A five pointed star as one self intersecting polygon, which is what tells the two fill

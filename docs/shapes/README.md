@@ -187,6 +187,8 @@ _sb.FillShape(heart, Color.Crimson);
 _sb.StrokeShape(heart, Color.White, strokeWidth: 5f, join: PathJoin.Round, cap: PathCap.Round);
 ```
 
+Neither places anything: they paint the path where it was written, the way `FillPath` draws the points it is handed. So a path meant to be filled on its own is authored in the coordinates it belongs at, while one built around its own origin is drawn with `DrawShape`, which is the call that moves it. The two are worth telling apart, because filling a path authored around `(0, 0)` puts it at the world origin rather than wherever the last `DrawShape` put it.
+
 The fill goes through the same solver the text and the SVG drawings use, so a curve stays exact at any size rather than being flattened into segments. `size` is world units per path unit; the stroke width is in path units too, so it scales with the shape.
 
 A path is filled by the nonzero rule unless it was built with `FillRule.EvenOdd`. That is what decides how a path that crosses itself fills: a five pointed star drawn as one outline fills solid under nonzero and leaves a pentagon under even-odd. `MarkHole` is the other way to make a hole, and the one to use when the inner subpath is not a separate shape:
