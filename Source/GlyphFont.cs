@@ -75,6 +75,9 @@ namespace Apos.Shapes {
         private readonly Dictionary<int, BakedGlyph> _byCodePoint = new();
         private readonly Dictionary<long, int> _kerning = new();
         private readonly List<GlyphCurve> _scratch = new();
+        // Where each contour starts in _scratch. Kept beside it so a bake that records its
+        // contours through the same lock reuses both.
+        private readonly List<int> _scratchStarts = new();
         // A font outlives any one batch and nothing stops two of them being on different
         // threads, the same way a ramp can be. Everything behind here mutates on first use, and
         // the font file's own reader is not reentrant either, so the whole lookup takes the
@@ -177,7 +180,9 @@ namespace Apos.Shapes {
             }
 
             List<GlyphCurve> curves = _scratch;
+            List<int> starts = _scratchStarts;
             curves.Clear();
+            starts.Clear();
             float x = 0f, y = 0f;
             for (int v = 0; v < count; v++) {
                 ref StbTrueType.stbtt_vertex vert = ref verts[v];
@@ -185,6 +190,9 @@ namespace Apos.Shapes {
                 float ny = vert.y;
                 switch ((int)vert.type) {
                     case StbTrueType.STBTT_vmove:
+                        // A contour always closes back to its first point, so a move is the only
+                        // place one loop ends and the next begins.
+                        starts.Add(curves.Count);
                         break;
                     case StbTrueType.STBTT_vline:
                         curves.Add(new GlyphCurve {
@@ -209,7 +217,7 @@ namespace Apos.Shapes {
 
             int x1, y1, x2, y2;
             StbTrueType.stbtt_GetGlyphBox(_info, glyph, &x1, &y1, &x2, &y2);
-            return GlyphBake.Bake(curves, glyph, advance, bearing, x1, y1, x2, y2, UnitsPerEm, MaxCurves);
+            return GlyphBake.Bake(curves, glyph, advance, bearing, x1, y1, x2, y2, UnitsPerEm, MaxCurves, starts);
         }
 
         // A glyph with nothing to draw still advances the cursor, so whitespace does not

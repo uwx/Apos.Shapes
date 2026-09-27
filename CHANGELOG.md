@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Added
 
 - `ShapePath`: a shape built from canvas style path commands (`MoveTo`, `LineTo`, `QuadTo`, `CubicTo`, `ArcTo`, `Close`, `MarkHole`), filled by the glyph solver and stroked through the path renderer. Build one with `ShapeBatch.ShapePath()` or `BeginShapePath`, and draw it with `FillShape`, `StrokeShape` or `DrawShape`. It takes a `FillRule` of `NonZero` or `EvenOdd`.
+- Outlined text: a `DrawString` overload taking an outline color and a width, which strokes each glyph's own contour behind the fill. The stroke straddles the outline, so the two colors meet at the glyph's edge with no seam, and the outline follows the curves rather than a flattened copy of them. It goes into the same batch as everything else.
 
 ## [0.8.5] - 2026-09-07
 

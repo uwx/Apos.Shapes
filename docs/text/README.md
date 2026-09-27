@@ -138,6 +138,23 @@ A local gradient reads its two points in the line's own box, the one `MeasureStr
 
 Alpha lives in the fill's colors, so translucent text is a fill whose colors are translucent. `new Color(255, 255, 255, 128)` draws a half transparent white line, and two stops with different alphas fade a line out along its length.
 
+## Outlined text
+
+An overload takes an outline color and a width, and strokes each glyph behind its fill:
+
+```csharp
+_sb.DrawString(_font, "Outline", at, 40f,
+    new Color(255, 255, 255),   // fill
+    new Color(17, 24, 39),      // outline
+    4f);                        // width in world units
+```
+
+The stroke straddles the glyph's outline rather than sitting outside it, so half of it covers the edge of the fill and the two colors meet with no seam and no gap between them. The outline therefore grows the letter by half the width you asked for, on every side, so a measured box no longer covers the result exactly.
+
+The outline follows the glyph's own curves. It's the same contour the outline was baked from, stroked through the path renderer the shapes use, so it stays smooth at any size and doesn't come out faceted when you zoom in.
+
+The outline takes a `Gradient` as well as a `Color`, and it resolves across the whole string the same way the fill does, so a gradient on the outline runs from the first letter to the last. A width of zero, or a negative one, draws no outline and the outline color goes unread.
+
 ## Limits
 
 Only TrueType outlines work. Most `.otf` files describe their glyphs with cubic curves in a `CFF` table instead, and this solver is quadratic only, so loading one throws a `NotSupportedException`. `TryLoad` is how you check without a `try`.

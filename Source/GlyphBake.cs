@@ -73,6 +73,14 @@ namespace Apos.Shapes {
 
         internal float[] BandTexels = Array.Empty<float>();
         internal float[] CurveTexels = Array.Empty<float>();
+        // The outline as it was handed in, in em units and in contour order, for the callers that
+        // need the shape rather than a scanline through it: stroking a glyph runs the contour
+        // through the path renderer. The curves above are sorted per band, so neither array can
+        // answer this. Empty for a glyph with no outline.
+        internal GlyphCurve[] Contour = Array.Empty<GlyphCurve>();
+        // Where each contour starts in Contour. One entry per closed loop, and a font that draws
+        // a counter has one more loop than it has outlines.
+        internal int[] ContourStarts = Array.Empty<int>();
         // Bands whose curve list ran past MaxCurves and lost its tail. The sort is what makes
         // that survivable, so this is a quality statistic rather than an error.
         internal int Clamped;
@@ -122,9 +130,14 @@ namespace Apos.Shapes {
 
         // Bakes an outline, given in design units in outline order, against the box and metrics
         // the font reported for it. The curve list is sorted in place.
+        //
+        // contourStarts marks where each closed loop begins in the outline order, which the
+        // retained contour and its strokes need. Null means the whole list is one loop, which is
+        // right for a caller drawing a single subpath.
         internal static BakedGlyph Bake(
             List<GlyphCurve> curves, int glyph, int advance, int bearing,
-            int x1, int y1, int x2, int y2, int unitsPerEm, int maxCurves) {
+            int x1, int y1, int x2, int y2, int unitsPerEm, int maxCurves,
+            List<int>? contourStarts = null) {
 
             var g = new BakedGlyph(glyph) {
                 Advance = advance,
@@ -147,6 +160,25 @@ namespace Apos.Shapes {
                     c.P2 = (c.P1 + c.P3) * 0.5f;
                     curves[i] = c;
                 }
+            }
+
+            // The contour is copied out here, before the two band passes sort this same list in
+            // place, and in em units so a stroker has nothing left to convert.
+            g.Contour = new GlyphCurve[curves.Count];
+            for (int i = 0; i < curves.Count; i++) {
+                GlyphCurve c = curves[i];
+                c.P1 = Em(c.P1, em);
+                c.P2 = Em(c.P2, em);
+                c.P3 = Em(c.P3, em);
+                g.Contour[i] = c;
+            }
+            if (contourStarts != null && contourStarts.Count > 0) {
+                g.ContourStarts = new int[contourStarts.Count];
+                for (int i = 0; i < contourStarts.Count; i++) g.ContourStarts[i] = contourStarts[i];
+            } else {
+                // No boundary information means one contour, which is what a caller with a single
+                // subpath has anyway.
+                g.ContourStarts = new[] { 0 };
             }
 
             // Texel 0 of the block is the pad curve, so the outline starts at texel 2.

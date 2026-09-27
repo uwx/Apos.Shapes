@@ -2785,6 +2785,13 @@ namespace Apos.Shapes {
         /// <exception cref="ArgumentNullException"><paramref name="font"/> is null.</exception>
         /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
         public void DrawString(ShapeFont font, ReadOnlySpan<char> text, Vector2 position, float size, Gradient fill, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
+            DrawStringCore(font, text, position, size, fill, default, 0f, rotation, origin, aaSize);
+        }
+
+        // The whole text path, with the outline optional. A width of zero or less draws the fill
+        // alone, which is what the plain DrawString calls with, and the outline paint is then
+        // never read.
+        private void DrawStringCore(ShapeFont font, ReadOnlySpan<char> text, Vector2 position, float size, Gradient fill, Gradient outline, float outlineWidth, float rotation, Vector2 origin, float aaSize) {
             ArgumentNullException.ThrowIfNull(font);
             if (text.IsEmpty) return;
 
@@ -2793,6 +2800,8 @@ namespace Apos.Shapes {
             // they are resolved.
             float scale = size / font.UnitsPerEm;
             float lineHeight = font.LineHeight * size;
+
+            bool hasOutline = outlineWidth > 0f;
 
             float sin = 0f;
             float cos = 1f;
@@ -2805,6 +2814,13 @@ namespace Apos.Shapes {
             // world points out of it. Per glyph the gradient would start over inside each quad.
             if (fill.IsLocal) {
                 GradientToWorld(ref fill, position, -origin, sin, cos);
+            }
+            // The outline is the same frame across the whole string, so a local gradient on it
+            // also resolves once. DrawGlyphOutline would otherwise resolve it per glyph, which
+            // would anchor the same paint at a different pen for every letter.
+            if (hasOutline && outline.IsLocal) {
+                GradientToWorld(ref outline, position, -origin, sin, cos);
+                outline.IsLocal = false;
             }
 
             // The pen rides in the text's own frame, y down from the top left corner with the
@@ -2837,6 +2853,12 @@ namespace Apos.Shapes {
                 if (g.HasOutline) {
                     var at = new Vector2(position.X + penX * cos - penY * sin,
                                          position.Y + penX * sin + penY * cos);
+                    // The stroke straddles the outline, so its inner half sits under the fill and
+                    // the two meet at the edge with no seam and no gap. Drawing it first is what
+                    // puts the fill on top of that half.
+                    if (hasOutline) {
+                        DrawGlyphOutline(g, at, glyphScale * em, outline, outlineWidth, sin, cos, aaSize);
+                    }
                     DrawGlyphQuad(g, at, glyphScale * em, fill, sin, cos, aaSize);
                 }
                 penX += g.Advance * em * scale;
@@ -2857,6 +2879,46 @@ namespace Apos.Shapes {
         /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
         public void DrawString(ShapeFont font, string text, Vector2 position, float size, Gradient fill, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
             DrawString(font, text.AsSpan(), position, size, fill, rotation, origin, aaSize);
+        }
+
+        /// <summary>
+        /// Draws a string with an outline around every glyph, in a color of its own. This is the
+        /// same text <see cref="DrawString(ShapeFont, ReadOnlySpan{char}, Vector2, float, Gradient, float, Vector2, float)"/>
+        /// draws, with the glyph's own contour stroked behind it.
+        /// </summary>
+        /// <param name="font">The font to draw with.</param>
+        /// <param name="text">The text to draw. A newline starts a line, a carriage return is skipped.</param>
+        /// <param name="position">Top left of the first line, before the origin is taken off.</param>
+        /// <param name="size">Em size in world units, which is the size the text comes out at.</param>
+        /// <param name="fill">Color or gradient the glyphs are filled with.</param>
+        /// <param name="outline">Color or gradient the outline is drawn in.</param>
+        /// <param name="outlineWidth">
+        /// Thickness of the outline in world units. The stroke straddles the outline, so half of it
+        /// covers the edge of the fill. Zero draws no outline, and so does a negative width.
+        /// </param>
+        /// <param name="rotation">Angle in radians, turned around <paramref name="position"/>.</param>
+        /// <param name="origin">The point rotation turns around, in world units out from the top left corner.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="font"/> is null.</exception>
+        /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
+        public void DrawString(ShapeFont font, ReadOnlySpan<char> text, Vector2 position, float size, Gradient fill, Gradient outline, float outlineWidth, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
+            DrawStringCore(font, text, position, size, fill, outline, outlineWidth, rotation, origin, aaSize);
+        }
+        /// <summary>Draws outlined text. See the span overload.</summary>
+        /// <param name="font">The font to draw with.</param>
+        /// <param name="text">The text to draw. A newline starts a line, a carriage return is skipped.</param>
+        /// <param name="position">Top left of the first line, before the origin is taken off.</param>
+        /// <param name="size">Em size in world units, which is the size the text comes out at.</param>
+        /// <param name="fill">Color or gradient the glyphs are filled with.</param>
+        /// <param name="outline">Color or gradient the outline is drawn in.</param>
+        /// <param name="outlineWidth">Thickness of the outline in world units. Zero draws no outline.</param>
+        /// <param name="rotation">Angle in radians, turned around <paramref name="position"/>.</param>
+        /// <param name="origin">The point rotation turns around, in world units out from the top left corner.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="font"/> is null.</exception>
+        /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
+        public void DrawString(ShapeFont font, string text, Vector2 position, float size, Gradient fill, Gradient outline, float outlineWidth, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
+            DrawStringCore(font, text.AsSpan(), position, size, fill, outline, outlineWidth, rotation, origin, aaSize);
         }
 
         /// <summary>
@@ -3127,6 +3189,86 @@ namespace Apos.Shapes {
             float x = em.X * scale.X;
             float y = -em.Y * scale.Y;
             return new Vector2(position.X + x * cos - y * sin, position.Y + x * sin + y * cos);
+        }
+
+        // One glyph's outline, stroked through the path renderer rather than solved from the
+        // band data. A stroke is not a coverage question the band solver can answer: the two
+        // scans count crossings of the outline itself, and the offset of a quadratic is a
+        // sextic the solver has no room to hold. The contour is the same one the bake was made
+        // from, kept for this, so the stroke follows the glyph exactly rather than a flattened
+        // approximation of it.
+        //
+        // The stroke straddles the outline, so half of it lands inside the glyph. That is what
+        // makes the pair read as one letter: the fill covers the inner half and the two colors
+        // meet at the outline instead of leaving a seam between them.
+        //
+        // A glyph whose bake dropped curves - a counter that ran past a band's list - keeps its
+        // full contour here regardless, since this walks the outline rather than the bands.
+        //
+        // The outline paint arrives already in world space: DrawString resolves a local gradient
+        // on it once for the whole string, so there is nothing here to anchor per glyph.
+        private void DrawGlyphOutline(BakedGlyph g, Vector2 position, Vector2 scale, in Gradient outline, float width, float sin, float cos, float aaSize) {
+            if (g.Contour.Length == 0) return;
+            float radius = MathF.Abs(width) * 0.5f;
+            if (!(radius > 0f)) return;
+
+            // The flatten tolerance is measured against the curve's bow in em units, so it needs
+            // the em scale to mean a world distance. The width does not: it arrives in world
+            // units already, which is the same unit the mapped points and the radius below are in.
+            float penScale = MathF.Sqrt(MathF.Abs(scale.X * scale.Y));
+            Vector2 Map(Vector2 em) {
+                float x = em.X * scale.X;
+                float y = -em.Y * scale.Y;
+                return new Vector2(position.X + x * cos - y * sin, position.Y + x * sin + y * cos);
+            }
+
+            var buffer = _outlineFlatten;
+            int start = 0;
+            for (int s = 0; s < g.ContourStarts.Length; s++) {
+                int next = s + 1 < g.ContourStarts.Length ? g.ContourStarts[s + 1] : g.Contour.Length;
+                int count = next - start;
+                if (count < 1) { start = next; continue; }
+                buffer.Clear();
+                FlattenContour(g.Contour, start, count, buffer, penScale);
+                if (buffer.Count >= 2) {
+                    Span<Vector2> pts = Scratch(ref _outlinePoints, buffer.Count);
+                    for (int j = 0; j < buffer.Count; j++) pts[j] = Map(buffer[j]);
+                    // Every glyph contour is a closed loop, so no cap ever runs and the join is
+                    // what decides the outside of a corner.
+                    FillPath(pts, radius, outline, PathJoin.Round, PathCap.Round, null, 4f, aaSize, closed: true);
+                }
+                start = next;
+            }
+        }
+
+        // A contour's quadratics as a polyline, flat enough that no point of the curve is
+        // further than tol from the segment drawn for it. A quadratic split into k pieces
+        // divides its second difference by k squared and the bow of a piece is half that, so
+        // the count falls straight out of the tolerance with nothing to iterate.
+        private static void FlattenContour(GlyphCurve[] curves, int start, int count, List<Vector2> into, float scale) {
+            // A quarter of a world unit at the size drawn, the same target the path renderer
+            // flattens a ShapePath to. The bow is measured in em units, so it is scaled up
+            // before it is compared.
+            const float tol = 0.25f;
+            into.Add(curves[start].P1);
+            for (int i = 0; i < count; i++) {
+                GlyphCurve c = curves[start + i];
+                float bow = ((c.P1 + c.P3) * 0.5f - c.P2).Length() * 0.5f * MathF.Max(scale, 1e-6f);
+                int k = 1;
+                if (bow > tol) {
+                    k = (int)MathF.Ceiling(MathF.Sqrt(bow / tol));
+                    k = Math.Clamp(k, 1, 64);
+                }
+                float d = 1f / k;
+                for (int j = 1; j <= k; j++) {
+                    float t = j * d;
+                    float u = 1f - t;
+                    into.Add(c.P1 * (u * u) + c.P2 * (2f * u * t) + c.P3 * (t * t));
+                }
+            }
+            // The last curve ends where the first one started, so the loop is already closed and
+            // the duplicate point would only give the renderer a zero length segment to drop.
+            if (into.Count > 1 && into[^1] == into[0]) into.RemoveAt(into.Count - 1);
         }
 
         /// <summary>
@@ -4309,6 +4451,11 @@ namespace Apos.Shapes {
         // across subpaths and draws for the same reason the arrays are.
         private Vector2[] _shapePoints = [];
         private readonly List<Vector2> _shapeFlatten = new();
+        // A glyph outline's stroke, mapped into the world. Apart from the three above because
+        // FillPath copies out of this one while the flatten list beside it is being refilled for
+        // the next contour.
+        private Vector2[] _outlinePoints = [];
+        private readonly List<Vector2> _outlineFlatten = new();
         private float[] _scratchRadii = [];
         private PathJoin[] _scratchJoins = [];
         private PathJoint[] _scratchJoints = [];
