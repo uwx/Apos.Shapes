@@ -1,7 +1,7 @@
 # SVG
 This guide will show you how to draw SVG files with the `ShapeBatch`.
 
-A drawing comes out of the file's own outlines. The pixel shader solves the curves that cross each pixel, the same way it solves a glyph, so a drawing is exact at whatever size and rotation it lands at. Nothing is rasterized up front, so there's no size to pick and no bitmap to go soft when you zoom. Drawings go into the same batch as the shapes and never break it.
+A drawing comes out of the file's own outlines. The pixel shader solves the curves that cross each pixel, the same way it solves a circle, so a drawing is exact at whatever size and rotation it lands at. Nothing is rasterized up front, so there's no size to pick and no bitmap to go soft when you zoom. Drawings go into the same batch as the shapes and never break it.
 
 ## Load a drawing
 
@@ -217,7 +217,11 @@ Opacity on a group multiplies into its children instead of compositing the group
 
 An element wider or taller than about 2.4 times the viewBox height is dropped rather than drawn wrong. That's per element, not per document, so a long banner made of ordinary marks is fine.
 
+Each scanline through an element carries up to 16 curves, because that is what the solver reads in one pass. A real drawing almost never reaches it, but a dense one can: the shade blocks `░ ▒ ▓` (U+2591 to U+2593), where a row genuinely crosses more than 16, are the loud case and come out with detail missing. Drawn as text they are baked into a distance field instead, which has no such limit.
+
 A hand minified file sometimes uses an `xlink:href` without declaring the `xlink` prefix. That isn't well formed XML, so the load fails and `TryLoad` returns false. Adding `xmlns:xlink="http://www.w3.org/1999/xlink"` to the root element fixes the file.
+
+On KNI's GL backends (WebGL, GLES, and desktop GL) the outlines are stored to within ~0.00003 em rather than exactly. It's a workaround for a bug in `nkast.Wasm.Canvas` that drops float texture uploads. An anti-aliased edge pixel there can land a shade off what the other backends give.
 
 ## Follow up
 

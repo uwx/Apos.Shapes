@@ -35,6 +35,8 @@
     <PackageReference Include="KNI.Extended" Version="5.3.1" />
     <!-- Reads the glyph outlines the shader solves. -->
     <PackageReference Include="StbTrueTypeSharp" Version="1.26.12" />
+    <!-- Bakes the distance field the text shader samples; see MsdfBake.cs. -->
+    <PackageReference Include="Remora.MSDFGen" Version="2.0.0" />
   </ItemGroup>
 
   <ItemGroup>

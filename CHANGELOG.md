@@ -9,7 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ### Added
 
 - `ShapePath`: a shape built from canvas style path commands (`MoveTo`, `LineTo`, `QuadTo`, `CubicTo`, `ArcTo`, `Close`, `MarkHole`), filled by the glyph solver and stroked through the path renderer. Build one with `ShapeBatch.ShapePath()` or `BeginShapePath`, and draw it with `FillShape`, `StrokeShape` or `DrawShape`. It takes a `FillRule` of `NonZero` or `EvenOdd`.
-- Outlined text: a `DrawString` overload taking an outline color and a width, which strokes each glyph's own contour behind the fill. The stroke straddles the outline, so the two colors meet at the glyph's edge with no seam, and the outline follows the curves rather than a flattened copy of them. It goes into the same batch as everything else.
+- Outlined text: a `DrawString` overload taking an outline color and a width, which draws a band outside each glyph. The band is a shift of the glyph's distance field rather than geometry behind the fill, so the two colors meet at the glyph's edge with no seam and an outlined line builds in about the same time as a plain one. It goes into the same batch as everything else.
+- Glow on text: the same overload takes a glow radius after the width, a world space Gaussian on the outline's band. Before this it was silently a no-op, since a glyph carried no distance for the blur to read.
+- `ShapeFont.Prewarm`: bakes the distance fields of every glyph in a string, so a screen of text nothing has drawn before does not pay for all of them on the frame it appears.
+
+### Changed
+
+- Text is drawn from a baked distance field rather than solved from the font's curves at draw time. A field is one signed distance per pixel rather than a coverage, which is what outline, glow and shadow are arithmetic on. The trade is that a glyph is no longer exact at any size: it is baked at 48 texels per em, so the sizes the guides document sample the field rather than magnify it, and text zoomed far past that softens. SVG and `ShapePath` still solve their curves exactly and are unchanged.
 
 ## [0.8.5] - 2026-09-07
 

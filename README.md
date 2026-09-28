@@ -5,9 +5,9 @@ Shape rendering library for MonoGame and KNI.
 
 ## Description
 
-This library draws crisp anti-aliased shapes on the GPU using [SDF](https://en.wikipedia.org/wiki/Signed_distance_function)s. It also draws text straight from a font's outlines, SVG drawings straight from theirs, and textures with the `SpriteBatch` API. Shapes, text, drawings, and textures can be interleaved in any order. Everything renders together in a single batch that never needs to break.
+This library draws crisp anti-aliased shapes on the GPU using [SDF](https://en.wikipedia.org/wiki/Signed_distance_function)s. It also draws text from a per-glyph distance field, SVG drawings straight from their own outlines, and textures with the `SpriteBatch` API. Shapes, text, drawings, and textures can be interleaved in any order. Everything renders together in a single batch that never needs to break.
 
-Special thanks to [Inigo Quilez](https://iquilezles.org/) for doing a lot of the work on the math functions. The text follows Eric Lengyel's [Slug](https://sluglibrary.com) algorithm, by way of [Forme](https://github.com/AristurtleDev/Forme).
+Special thanks to [Inigo Quilez](https://iquilezles.org/) for doing a lot of the work on the math functions. SVG and `ShapePath` follow Eric Lengyel's [Slug](https://sluglibrary.com) algorithm, by way of [Forme](https://github.com/AristurtleDev/Forme); the glyph outlines are read through [stb_truetype](https://github.com/nothings/stb) and baked into distance fields with [msdfgen](https://github.com/Chlumsky/msdfgen).
 
 ![Shapes drawn with Apos.Shapes](./Images/example.png)
 
@@ -22,8 +22,8 @@ Special thanks to [Inigo Quilez](https://iquilezles.org/) for doing a lot of the
 * Blurred shapes with a Gaussian edge, for drop shadows and glows
 * `Measure` for every shape, giving the bounds it covers so a camera can cull it. No batch and no view needed
 * Blue noise dithering so slow gradients don't band on 8-bit displays
-* Text solved from the font's own outlines in the shader. No atlas, so nothing picks a size up front and a glyph stays exact at any size, rotation, and zoom
-* SVG drawings solved the same way, fills and strokes, in the file's own colors and gradients or in one color of your own
+* Text baked into a distance field per glyph, so outline, glow and shadow are arithmetic on one distance rather than geometry behind the fill. No charset to declare, and a glyph is baked once however many times it is drawn
+* SVG drawings solved from the file's own outlines in the shader, fills and strokes, in the file's own colors and gradients or in one color of your own. Exact at any zoom
 * Textures (`SpriteBatch` API)
 * Clipping to a rectangle
 * One batch for everything. Mixing shapes, text, drawings, and textures never breaks the batch

@@ -73,6 +73,15 @@ namespace Apos.Shapes {
                 // a gradient's frame, so the border side stands down rather than repeating the
                 // fill over a frame that isn't one.
                 border = default;
+            } else if (shape == Shape.MsdfGlyph) {
+                // An MSDF glyph has a real border band - the outline is one - and the tail reads
+                // it as it reads any other shape's. Only BorderCoord is spoken for, holding the
+                // field's range and the corner's em position rather than a second gradient's
+                // frame, so a gradient outline loses its frame and paints flat while a stop pair
+                // rides the packed colors as usual.
+                border.IsPalette = false;
+                border.R = null;
+                border.Colors = null;
             }
 
             Position = position;
@@ -368,6 +377,12 @@ namespace Apos.Shapes {
             Ring = 8,
             /// <summary>A textured quad, masked in raw RGBA.</summary>
             Texture = 9,
+            /// <summary>
+            /// A glyph sampled from a baked multi-channel distance field. Unlike <see cref="Glyph"/>
+            /// this solves to a signed distance rather than to coverage, so the border band, the
+            /// blur and the gradient all read it the way they read every other shape's edge.
+            /// </summary>
+            MsdfGlyph = 10,
             /// <summary>One quad of a path, which carries its own caps and joins.</summary>
             Path = 11,
             /// <summary>A rectangle with its corners cut straight across.</summary>

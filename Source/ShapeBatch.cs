@@ -122,6 +122,7 @@ namespace Apos.Shapes {
             _bandTexSize = _effect.Parameters["band_tex_size"];
             _bandTexel = _effect.Parameters["band_texel"];
             _curveTexel = _effect.Parameters["curve_texel"];
+            _msdfTexel = _effect.Parameters["msdf_texel"];
 
             _blueNoise = BlueNoise.CreateTexture(graphicsDevice);
 
@@ -2785,13 +2786,13 @@ namespace Apos.Shapes {
         /// <exception cref="ArgumentNullException"><paramref name="font"/> is null.</exception>
         /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
         public void DrawString(ShapeFont font, ReadOnlySpan<char> text, Vector2 position, float size, Gradient fill, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
-            DrawStringCore(font, text, position, size, fill, default, 0f, rotation, origin, aaSize);
+            DrawStringCore(font, text, position, size, fill, default, 0f, rotation, origin, aaSize, 0f);
         }
 
         // The whole text path, with the outline optional. A width of zero or less draws the fill
         // alone, which is what the plain DrawString calls with, and the outline paint is then
         // never read.
-        private void DrawStringCore(ShapeFont font, ReadOnlySpan<char> text, Vector2 position, float size, Gradient fill, Gradient outline, float outlineWidth, float rotation, Vector2 origin, float aaSize) {
+        private void DrawStringCore(ShapeFont font, ReadOnlySpan<char> text, Vector2 position, float size, Gradient fill, Gradient outline, float outlineWidth, float rotation, Vector2 origin, float aaSize, float glow) {
             ArgumentNullException.ThrowIfNull(font);
             if (text.IsEmpty) return;
 
@@ -2801,7 +2802,9 @@ namespace Apos.Shapes {
             float scale = size / font.UnitsPerEm;
             float lineHeight = font.LineHeight * size;
 
-            bool hasOutline = outlineWidth > 0f;
+            // A glow is a world space Gaussian on the same band the outline is, so it replaces
+            // the AA width rather than adding to it, the way it does on every other shape.
+            bool hasGlow = glow > 0f;
 
             float sin = 0f;
             float cos = 1f;
@@ -2816,8 +2819,9 @@ namespace Apos.Shapes {
                 GradientToWorld(ref fill, position, -origin, sin, cos);
             }
             // The outline is the same frame across the whole string, so a local gradient on it
-            // also resolves once. DrawGlyphOutline would otherwise resolve it per glyph, which
-            // would anchor the same paint at a different pen for every letter.
+            // also resolves once, rather than per glyph anchoring the same paint at a different
+            // pen for every letter.
+            bool hasOutline = outlineWidth > 0f;
             if (hasOutline && outline.IsLocal) {
                 GradientToWorld(ref outline, position, -origin, sin, cos);
                 outline.IsLocal = false;
@@ -2846,20 +2850,18 @@ namespace Apos.Shapes {
                 // The glyph may come out of a fallback font, so it carries an em of its own:
                 // em folds the outline into the primary's em, and the advance is rescaled the
                 // same way, since it is measured in the units of the font it came from.
-                BakedGlyph g = font.Resolve(codePoint, out float em, out GlyphFont? owner);
+                MsdfGlyph? g = font.ResolveField(codePoint, out float em, out GlyphFont? owner);
+                if (g == null) continue;
                 if (prev >= 0 && ReferenceEquals(owner, prevOwner)) {
                     penX += owner!.Kerning(prev, g.Glyph) * scale * em;
                 }
-                if (g.HasOutline) {
+                if (g.HasField) {
                     var at = new Vector2(position.X + penX * cos - penY * sin,
                                          position.Y + penX * sin + penY * cos);
-                    // The stroke straddles the outline, so its inner half sits under the fill and
-                    // the two meet at the edge with no seam and no gap. Drawing it first is what
-                    // puts the fill on top of that half.
-                    if (hasOutline) {
-                        DrawGlyphOutline(g, at, glyphScale * em, outline, outlineWidth, sin, cos, aaSize);
-                    }
-                    DrawGlyphQuad(g, at, glyphScale * em, fill, sin, cos, aaSize);
+                    // One quad carries the fill, the outline and the glow alike: the shader shifts
+                    // the field's distance by the outline width and the band crossfade paints the
+                    // two colors against each other. There is nothing to stroke behind it.
+                    DrawMsdfQuad(g, at, glyphScale * em, fill, outline, hasOutline ? outlineWidth : 0f, sin, cos, aaSize, hasGlow ? glow : 0f);
                 }
                 penX += g.Advance * em * scale;
                 prev = g.Glyph;
@@ -2884,7 +2886,7 @@ namespace Apos.Shapes {
         /// <summary>
         /// Draws a string with an outline around every glyph, in a color of its own. This is the
         /// same text <see cref="DrawString(ShapeFont, ReadOnlySpan{char}, Vector2, float, Gradient, float, Vector2, float)"/>
-        /// draws, with the glyph's own contour stroked behind it.
+        /// draws, with a band of <paramref name="outlineWidth"/> painted outside each glyph.
         /// </summary>
         /// <param name="font">The font to draw with.</param>
         /// <param name="text">The text to draw. A newline starts a line, a carriage return is skipped.</param>
@@ -2893,8 +2895,8 @@ namespace Apos.Shapes {
         /// <param name="fill">Color or gradient the glyphs are filled with.</param>
         /// <param name="outline">Color or gradient the outline is drawn in.</param>
         /// <param name="outlineWidth">
-        /// Thickness of the outline in world units. The stroke straddles the outline, so half of it
-        /// covers the edge of the fill. Zero draws no outline, and so does a negative width.
+        /// Width of the outline band in world units, measured outward from the glyph's edge. Zero
+        /// draws no outline, and so does a negative width.
         /// </param>
         /// <param name="rotation">Angle in radians, turned around <paramref name="position"/>.</param>
         /// <param name="origin">The point rotation turns around, in world units out from the top left corner.</param>
@@ -2902,7 +2904,47 @@ namespace Apos.Shapes {
         /// <exception cref="ArgumentNullException"><paramref name="font"/> is null.</exception>
         /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
         public void DrawString(ShapeFont font, ReadOnlySpan<char> text, Vector2 position, float size, Gradient fill, Gradient outline, float outlineWidth, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
-            DrawStringCore(font, text, position, size, fill, outline, outlineWidth, rotation, origin, aaSize);
+            DrawStringCore(font, text, position, size, fill, outline, outlineWidth, rotation, origin, aaSize, 0f);
+        }
+
+        /// <summary>
+        /// Draws a string with an outline and a glow, which is the same text the outline overload
+        /// draws with a Gaussian falloff on the outline band. A glow with no outline is a halo
+        /// around the glyphs themselves.
+        /// </summary>
+        /// <param name="font">The font to draw with.</param>
+        /// <param name="text">The text to draw. A newline starts a line, a carriage return is skipped.</param>
+        /// <param name="position">Top left of the first line, before the origin is taken off.</param>
+        /// <param name="size">Em size in world units, which is the size the text comes out at.</param>
+        /// <param name="fill">Color or gradient the glyphs are filled with.</param>
+        /// <param name="outline">Color or gradient the outline and its glow are drawn in.</param>
+        /// <param name="outlineWidth">Width of the outline band in world units. Zero or less glows the fill instead.</param>
+        /// <param name="glow">Standard deviation of the band's falloff in world units, or zero for a hard edge.</param>
+        /// <param name="rotation">Angle in radians, turned around <paramref name="position"/>.</param>
+        /// <param name="origin">The point rotation turns around, in world units out from the top left corner.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels. Unread when <paramref name="glow"/> is positive.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="font"/> is null.</exception>
+        /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
+        public void DrawString(ShapeFont font, ReadOnlySpan<char> text, Vector2 position, float size, Gradient fill, Gradient outline, float outlineWidth, float glow, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
+            DrawStringCore(font, text, position, size, fill, outline, outlineWidth, rotation, origin, aaSize, glow);
+        }
+
+        /// <summary>Draws a glowing string. See the span overload.</summary>
+        /// <param name="font">The font to draw with.</param>
+        /// <param name="text">The text to draw. A newline starts a line, a carriage return is skipped.</param>
+        /// <param name="position">Top left of the first line, before the origin is taken off.</param>
+        /// <param name="size">Em size in world units, which is the size the text comes out at.</param>
+        /// <param name="fill">Color or gradient the glyphs are filled with.</param>
+        /// <param name="outline">Color or gradient the outline and its glow are drawn in.</param>
+        /// <param name="outlineWidth">Width of the outline band in world units. Zero or less glows the fill instead.</param>
+        /// <param name="glow">Standard deviation of the band's falloff in world units, or zero for a hard edge.</param>
+        /// <param name="rotation">Angle in radians, turned around <paramref name="position"/>.</param>
+        /// <param name="origin">The point rotation turns around, in world units out from the top left corner.</param>
+        /// <param name="aaSize">Size of the anti-aliasing edge in pixels. Unread when <paramref name="glow"/> is positive.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="font"/> is null.</exception>
+        /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
+        public void DrawString(ShapeFont font, string text, Vector2 position, float size, Gradient fill, Gradient outline, float outlineWidth, float glow, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
+            DrawStringCore(font, text.AsSpan(), position, size, fill, outline, outlineWidth, rotation, origin, aaSize, glow);
         }
         /// <summary>Draws outlined text. See the span overload.</summary>
         /// <param name="font">The font to draw with.</param>
@@ -2918,7 +2960,7 @@ namespace Apos.Shapes {
         /// <exception cref="ArgumentNullException"><paramref name="font"/> is null.</exception>
         /// <exception cref="InvalidOperationException"><c>Begin</c> was never called.</exception>
         public void DrawString(ShapeFont font, string text, Vector2 position, float size, Gradient fill, Gradient outline, float outlineWidth, float rotation = 0f, Vector2 origin = default, float aaSize = 1.5f) {
-            DrawStringCore(font, text.AsSpan(), position, size, fill, outline, outlineWidth, rotation, origin, aaSize);
+            DrawStringCore(font, text.AsSpan(), position, size, fill, outline, outlineWidth, rotation, origin, aaSize, 0f);
         }
 
         /// <summary>
@@ -3177,6 +3219,117 @@ namespace Apos.Shapes {
             v.CopyTo(ref _vertices[_vertexCount + 1], new Vector3(topRight, 0), emTopRight, GetClipSpace(topRight));
             v.CopyTo(ref _vertices[_vertexCount + 2], new Vector3(bottomRight, 0), emBottomRight, GetClipSpace(bottomRight));
             v.CopyTo(ref _vertices[_vertexCount + 3], new Vector3(bottomLeft, 0), emBottomLeft, GetClipSpace(bottomLeft));
+
+            _triangleCount += 2;
+            _vertexCount += 4;
+            _indexCount += 6;
+        }
+
+        // One glyph out of its distance field, which is the text path's whole draw. Unlike the
+        // Slug form this is a signed distance, so the outline is a second band rather than a
+        // second pass: the fill, the outline and a glow all come out of the one quad, and the
+        // caller never strokes anything.
+        //
+        // Nothing here throws on the draw path. A glyph with no field - whitespace, a code point
+        // the font has no glyph for - draws nothing, and so does one the table has no room for.
+        //
+        // A local gradient is read from the pen, which is this glyph's own origin, and turns with
+        // it. DrawString resolves its own frame across the whole string instead.
+        internal void DrawMsdfGlyph(GlyphFont font, int codePoint, Vector2 position, Vector2 scale, Gradient fill, Gradient outline, float outlineWidth, float rotation = 0f, float aaSize = 1.5f, float glow = 0f) {
+            MsdfGlyph? g = font.FieldLookupOrNull(codePoint);
+            if (g == null) return;
+            float sin = 0f;
+            float cos = 1f;
+            if (rotation != 0f) {
+                (sin, cos) = SinCos(rotation);
+            }
+            if (fill.IsLocal) {
+                GradientToWorld(ref fill, position, Vector2.Zero, sin, cos);
+            }
+            DrawMsdfQuad(g, position, scale, fill, outline, outlineWidth, sin, cos, aaSize, glow);
+        }
+
+        // The quad itself, once the field is in hand and the rotation is resolved. A line of text
+        // shares one sine and one cosine across every glyph in it, and one gradient already in
+        // world space: the fill arrives resolved so a string paints one gradient rather than one
+        // per letter.
+        //
+        // The outline is painted by the same quad as the fill rather than by a stroke behind it,
+        // which is what the distance buys: the shader shifts d by the outline width and the
+        // existing band crossfade paints the two colors against each other, meeting exactly at
+        // the glyph's edge. `outlineWidth` is therefore the band's full width, not a stroke's,
+        // and there is nothing to halve.
+        private void DrawMsdfQuad(MsdfGlyph g, Vector2 position, Vector2 scale, in Gradient fill, in Gradient outline, float outlineWidth, float sin, float cos, float aaSize, float glow) {
+            PrepareQuad(fill, outline);
+            int at = _msdf.Resolve(g);
+            if (at < 0) {
+                // Every resident field is pinned by a quad this batch hasn't drawn yet, so
+                // drawing them is what makes room. A flush unpins everything, so the reseat
+                // only fails when one field alone is wider than the whole atlas.
+                Flush();
+                at = _msdf.Resolve(g);
+                if (at < 0) return;
+            }
+            (int rectX, int rectY, int rectW, int rectH) = _msdf.Rect(at);
+
+            Vector2 worldPerEm = new(MathF.Abs(scale.X), MathF.Abs(scale.Y));
+            // One texel of the field in world units: how far the em reaches over the bake's own
+            // resolution. The shader turns the field's texel distances into world distances with
+            // it, which is what the outline width and the AA band are both measured against.
+            float texelWorld = MathF.Sqrt(worldPerEm.X * worldPerEm.Y) / g.EmPx;
+            Vector2 center = new(position.X + (g.PaddedMin.X + g.PaddedMax.X) * 0.5f * scale.X,
+                                 position.Y - (g.PaddedMin.Y + g.PaddedMax.Y) * 0.5f * scale.Y);
+            float halfExtent = (g.PaddedMax - g.PaddedMin).Length() * MathF.Max(worldPerEm.X, worldPerEm.Y) * 0.5f;
+            // The blurs the vertex builder already places grow the quad in world units, so this
+            // only has to cover the field's own range. See the padding below for why it is the
+            // longer side of the range rather than half of it.
+            UpdatePixelSize(center, halfExtent + glow + MathF.Abs(outlineWidth));
+            Vector2 pixelsPerEm = new(worldPerEm.X / _pixelSize, worldPerEm.Y / _pixelSize);
+
+            // The field holds the distance out to half its range either side of the outline, and
+            // the AA fade reaches a little past the near edge of that. A texel of world size is
+            // range/2 em over EmPx, so the margin is the half range expressed in em, plus the AA
+            // band and the outline the drawn band may reach across. The quad is bigger than it
+            // has to be when the outline is absent, which costs fill rate and cannot change a
+            // pixel, the same trade the Slug quad makes.
+            float halfRangeEm = 0.5f * g.RangeTexels / g.EmPx;
+            float aaEm = MathF.Abs(aaSize) / MathF.Max(MathF.Min(pixelsPerEm.X, pixelsPerEm.Y), 1e-6f);
+            float padEm = MathF.Max(halfRangeEm, MathF.Abs(outlineWidth) / MathF.Max(MathF.Min(worldPerEm.X, worldPerEm.Y), 1e-6f)) + aaEm;
+            Vector2 emMin = new(g.PaddedMin.X - padEm, g.PaddedMin.Y - padEm);
+            Vector2 emMax = new(g.PaddedMax.X + padEm, g.PaddedMax.Y + padEm);
+
+            // Each corner's own place in the atlas: the rect's texel edges, in the same order the
+            // em corners go round. A corner samples the rect's edge, which is half a texel past
+            // the outermost texel centre, so the field's own gutter is what keeps the fetch
+            // inside the glyph.
+            var texTopLeft = new Vector2(rectX, rectY);
+            var texTopRight = new Vector2(rectX + rectW, rectY);
+            var texBottomRight = new Vector2(rectX + rectW, rectY + rectH);
+            var texBottomLeft = new Vector2(rectX, rectY + rectH);
+
+            var emTopLeft = new Vector2(emMin.X, emMax.Y);
+            var emTopRight = new Vector2(emMax.X, emMax.Y);
+            var emBottomRight = new Vector2(emMax.X, emMin.Y);
+            var emBottomLeft = new Vector2(emMin.X, emMin.Y);
+
+            Vector2 topLeft = GlyphCorner(emTopLeft, position, scale, sin, cos);
+            Vector2 topRight = GlyphCorner(emTopRight, position, scale, sin, cos);
+            Vector2 bottomRight = GlyphCorner(emBottomRight, position, scale, sin, cos);
+            Vector2 bottomLeft = GlyphCorner(emBottomLeft, position, scale, sin, cos);
+
+            // The channels carry: TexCoord.xy the atlas texel coordinate, Meta2.xy the rect's
+            // texel size, BorderCoord.xy the corner's em coordinate for the gradient and
+            // BorderCoord.z the range in texels. See the channel map above PixelInput in
+            // apos-shapes.fx. Meta1.x is the outline band's width, which every other shape reads
+            // as its border thickness, and Meta1.y is the AA width or, under a glow, the sigma.
+            VertexShape v = new(new Vector3(topLeft, 0), texTopLeft, VertexShape.Shape.MsdfGlyph, fill, outline, outlineWidth, texelWorld, GetClipSpace(topLeft),
+                                aaSize: Aa(aaSize), a: rectW, b: rectH, c: 0f, d: 0f,
+                                colorSpace: ColorSpace, blur: glow, ramps: _ramps);
+            v.BorderCoord = new Vector4(emTopLeft.X, emTopLeft.Y, g.RangeTexels, 0f);
+            _vertices[_vertexCount + 0] = v;
+            v.CopyTo(ref _vertices[_vertexCount + 1], new Vector3(topRight, 0), texTopRight, GetClipSpace(topRight));
+            v.CopyTo(ref _vertices[_vertexCount + 2], new Vector3(bottomRight, 0), texBottomRight, GetClipSpace(bottomRight));
+            v.CopyTo(ref _vertices[_vertexCount + 3], new Vector3(bottomLeft, 0), texBottomLeft, GetClipSpace(bottomLeft));
 
             _triangleCount += 2;
             _vertexCount += 4;
@@ -3623,12 +3776,17 @@ namespace Apos.Shapes {
                 cb.UpdateTexture(upload.Texture, 0, upload.Y, upload.Texture.Width, upload.Rows, upload.Data);
             }
             _pendingGlyphUploads.Clear();
+            foreach (var upload in _pendingMsdfUploads) {
+                cb.UpdateTexture(upload.Texture, 0, upload.Y, upload.Texture.Width, upload.Rows, upload.Data);
+            }
+            _pendingMsdfUploads.Clear();
 
             // Every texture this batch samples is brought up to date before the pipeline goes up,
             // because the uploads are copies into resources rather than draw work and so have no
             // ordering relationship with the pipeline at all.
             UploadRamps(cb);
             UploadGlyphs(cb);
+            UploadMsdf(cb);
 
             if (_indicesChanged) {
                 _vertexBuffer.Dispose();
@@ -3669,11 +3827,14 @@ namespace Apos.Shapes {
             if (_glyphAtlas?.Curve is { } curve) {
                 _parameters.curve_texel.SetValue(cb, new Vector2(1f / curve.Width, 1f / curve.Height));
             }
+            if (_msdfAtlas?.Texture is { } msdfField) {
+                _parameters.msdf_texel.SetValue(cb, new Vector2(1f / msdfField.Width, 1f / msdfField.Height));
+            }
 
             cb.SetVertexBuffer(0, _vertexBuffer, VertexStride);
             cb.SetIndexBuffer(_indexBuffer);
 
-            // Six units, in the order the pixel shader first samples them. See the note on
+            // Seven units, in the order the pixel shader first samples them. See the note on
             // the sampler declarations in apos-shapes.fx: these numbers and that order have
             // to agree, and nothing warns when they don't. The units come from the reflection
             // rather than being written out as literals, so a shader whose declarations are
@@ -3684,6 +3845,13 @@ namespace Apos.Shapes {
                 // unfiltered; clamped because a padded lane's fetch is free to land anywhere.
                 _parameters.BandTex.SetValue(cb, _glyphAtlas.Band, _pointClamp);
                 _parameters.CurveTex.SetValue(cb, _glyphAtlas.Curve, _pointClamp);
+            }
+            if (_msdfAtlas?.Texture is { } msdf) {
+                // The distance field is the one texture here that must arrive FILTERED: the
+                // bilinear fetch is the reconstruction, and a point sample would throw away
+                // everything between texels. Clamped so a corner sample cannot reach into the
+                // neighbouring glyph.
+                _parameters.MsdfTex.SetValue(cb, msdf, _sampler);
             }
             if (_ellipseArc != null) {
                 // The shader reads the table's 16 bit values apart by hand, so it must arrive
@@ -3707,6 +3875,16 @@ namespace Apos.Shapes {
             // Everything packed so far is drawn, so the rows it referenced are free to recycle.
             _ramps.Flushed();
             _glyphs.Flushed();
+            _msdf.Flushed();
+        }
+
+        // Brings the distance field atlas up to date with its table. Nothing here hands the
+        // shader a size the way the Slug pair does: a field quad carries its own texel coordinate,
+        // so the only thing the shader needs is the reciprocal, written beside the others.
+        private void UploadMsdf(ICommandBuffer cb) {
+            if (_msdf.Count == 0) return;
+            _msdfAtlas ??= new MsdfAtlas();
+            _msdfAtlas.Upload(_device, cb, _msdf, _pendingMsdfUploads);
         }
 
         // Brings the two glyph textures up to date with the table's arenas, then hands the
@@ -3732,6 +3910,7 @@ namespace Apos.Shapes {
             UploadRamps();
             _rampTexel?.SetValue(new Vector2(1f / (Ramp.Width * 2), _rampAtlas != null ? 1f / _rampAtlas.Height : 0f));
             UploadGlyphs();
+            UploadMsdf();
 
             if (_indicesChanged) {
                 _vertexBuffer.Dispose();
@@ -3759,9 +3938,11 @@ namespace Apos.Shapes {
 
             foreach (EffectPass pass in _effect.CurrentTechnique.Passes) {
                 pass.Apply();
-                // Six units, in the order the pixel shader first samples them. See the note on
+                // Seven units, in the order the pixel shader first samples them. See the note on
                 // the sampler declarations in apos-shapes.fx: these numbers and that order have
-                // to agree, and nothing warns when they don't.
+                // to agree, and nothing warns when they don't. Unlike the NFMW build above, the
+                // units here are literals rather than read off a reflection, so a shader whose
+                // declarations are reordered silently samples the wrong table.
                 if (_texture != null) _graphicsDevice.Textures[0] = _texture;
                 if (_glyphAtlas?.Band != null && _glyphAtlas.Curve != null) {
                     // Both glyph tables are read texel by texel as data, so they must arrive
@@ -3771,18 +3952,25 @@ namespace Apos.Shapes {
                     _graphicsDevice.Textures[2] = _glyphAtlas.Curve;
                     _graphicsDevice.SamplerStates[2] = SamplerState.PointClamp;
                 }
+                if (_msdfAtlas?.Texture is { } msdf) {
+                    // The distance field is the one texture here that must arrive FILTERED: the
+                    // bilinear fetch is the reconstruction. Clamped so a corner sample cannot
+                    // reach into the neighbouring glyph.
+                    _graphicsDevice.Textures[3] = msdf;
+                    _graphicsDevice.SamplerStates[3] = SamplerState.LinearClamp;
+                }
                 if (_ellipseArc != null) {
                     // The shader reads the table's 16 bit values apart by hand, so it must arrive
                     // unfiltered; clamped because the walk runs to both ends of the quadrant.
-                    _graphicsDevice.Textures[3] = _ellipseArc;
-                    _graphicsDevice.SamplerStates[3] = SamplerState.PointClamp;
+                    _graphicsDevice.Textures[4] = _ellipseArc;
+                    _graphicsDevice.SamplerStates[4] = SamplerState.PointClamp;
                 }
-                _graphicsDevice.Textures[4] = _blueNoise;
-                _graphicsDevice.SamplerStates[4] = SamplerState.PointWrap;
+                _graphicsDevice.Textures[5] = _blueNoise;
+                _graphicsDevice.SamplerStates[5] = SamplerState.PointWrap;
                 // The ramp unit stays bound to something valid even with no atlas: the shader
                 // only samples it under a ramp flag no quad sets in that case.
-                _graphicsDevice.Textures[5] = _rampAtlas ?? _blueNoise;
-                _graphicsDevice.SamplerStates[5] = SamplerState.PointClamp;
+                _graphicsDevice.Textures[6] = _rampAtlas ?? _blueNoise;
+                _graphicsDevice.SamplerStates[6] = SamplerState.PointClamp;
 
                 _graphicsDevice.DrawIndexedPrimitives(PrimitiveType.TriangleList, 0, 0, _triangleCount);
             }
@@ -3793,6 +3981,7 @@ namespace Apos.Shapes {
             // Everything packed so far is drawn, so the rows it referenced are free to recycle.
             _ramps.Flushed();
             _glyphs.Flushed();
+            _msdf.Flushed();
         }
 
         // Brings the two glyph textures up to date with the table's arenas, then hands the
@@ -3809,6 +3998,18 @@ namespace Apos.Shapes {
             }
             if (_glyphAtlas.Curve != null) {
                 _curveTexel?.SetValue(new Vector2(1f / _glyphAtlas.Curve.Width, 1f / _glyphAtlas.Curve.Height));
+            }
+        }
+
+        // The distance field atlas. Unlike the Slug pair there are no texel sizes to hand over
+        // beyond the reciprocal: a field quad carries the coordinate it samples, the way every
+        // other shape carries its own, rather than being addressed into a shared table.
+        private void UploadMsdf() {
+            if (_msdf.Count == 0) return;
+            _msdfAtlas ??= new MsdfAtlas();
+            _msdfAtlas.Upload(_graphicsDevice, _msdf);
+            if (_msdfAtlas.Texture != null) {
+                _msdfTexel?.SetValue(new Vector2(1f / _msdfAtlas.Texture.Width, 1f / _msdfAtlas.Texture.Height));
             }
         }
 #endif
@@ -4332,6 +4533,13 @@ namespace Apos.Shapes {
         private readonly GlyphTable _glyphs = new();
         private GlyphAtlas? _glyphAtlas;
 
+        // The same arrangement for the text path's distance fields, which are one byte texture
+        // rather than the float pair a Slug glyph takes. A field is keyed by the MsdfGlyph a font
+        // hands back rather than by a baked glyph, so a font backing both renderers keeps the two
+        // sets of answers apart.
+        private readonly MsdfTable _msdf = new();
+        private MsdfAtlas? _msdfAtlas;
+
         private const int _initialVertices = 2048 * 4;
         private const int _initialIndices = 2048 * 6;
 
@@ -4375,6 +4583,8 @@ namespace Apos.Shapes {
         // Glyph rows that were rasterized when no command buffer was live, kept as copies so a
         // later flush can upload them. See GlyphAtlas.Sync.
         private readonly List<GlyphUpload> _pendingGlyphUploads = new();
+        // The same for the distance field's atlas rows, which are written the same way.
+        private readonly List<MsdfUpload> _pendingMsdfUploads = new();
 #else
         private readonly GraphicsDevice _graphicsDevice;
         private VertexShape[] _vertices;
@@ -4402,6 +4612,7 @@ namespace Apos.Shapes {
         private readonly EffectParameter? _bandTexSize;
         private readonly EffectParameter? _bandTexel;
         private readonly EffectParameter? _curveTexel;
+        private readonly EffectParameter? _msdfTexel;
         private readonly Texture2D _blueNoise;
         // Built the first time an ellipse is dashed, since nothing else reads it.
         private Texture2D? _ellipseArc;

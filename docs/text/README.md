@@ -1,7 +1,7 @@
 # Text
 This guide will show you how to draw text with the `ShapeBatch`.
 
-Text comes out of the font's own outlines. The pixel shader solves the curves that cross each pixel, the same way it solves a circle, so a glyph is exact at whatever size and rotation it lands at. There's no atlas behind it, so there's no size to pick up front and no charset to declare. Text goes into the same batch as the shapes and never breaks it.
+Text comes out of the font's own outlines. Each glyph is baked into a distance field on first use, and the pixel shader reads the distance to the outline out of it, so a pixel gets one signed number rather than a coverage. Outline, glow and shadow are then arithmetic on that number rather than geometry behind it, which is what makes them cheap enough to put on every frame. There's still no charset to declare. Text goes into the same batch as the shapes and never breaks it.
 
 ## Load a font
 
@@ -50,11 +50,17 @@ protected override void Draw(GameTime gameTime) {
 
 Shapes and text are drawn in the order you call them, and it's still one draw call. The fill is a `Gradient`, and a `Color` converts to one, so `Color.White` there is a gradient with one color in it. There's a `ReadOnlySpan<char>` overload for text you'd rather not build a string for.
 
-Every glyph is read out of the file the first time something draws it. You never declare a character set, and the ones you stop drawing get recycled to make room for the ones you start. Once a glyph is resident, building its quad costs about 13% more than a circle's, and a line of text allocates nothing.
+Every glyph is read out of the file the first time something draws it. You never declare a character set, and the ones you stop drawing get recycled to make room for the ones you start. A cold glyph costs a fraction of a millisecond to bake, which is free for text that dribbles in but is paid all at once for a screen of text nothing has drawn before. `Prewarm` moves that cost to a load screen or the moment a panel is built:
+
+```csharp
+_font.Prewarm("Fps: 0.00  Frame (CPU): 0.00ms");
+```
+
+The size and colors the text will be drawn at make no difference to it; a field is baked once per glyph, not per draw, and code points the font has no glyph for are skipped.
 
 ## The size is an em in world units
 
-`size` is the em size, in the same world units the shapes use. Nothing was baked at any of these sizes. The 9 px copy and the 38 px copy read the same curves out of the same table:
+`size` is the em size, in the same world units the shapes use. Every size reads the same baked field, so nothing has to pick one up front:
 
 ```csharp
 float x = 16f;
@@ -67,7 +73,7 @@ foreach (float size in new[] { 9f, 13f, 19f, 27f, 38f }) {
 
 ![The word Shapes at five rising sizes sitting on one baseline](sizes.png)
 
-Since the size is in world units, zooming the view in doesn't blur the letters, it draws them bigger. The curves are solved again every frame.
+Since the size is in world units, zooming the view in draws the letters bigger rather than scaling a bitmap. The field was baked at 48 texels per em, which is at or above one texel per screen pixel for every size the example above draws, so the field is sampled rather than magnified. Zoom in far past the size you drew at and the edge softens, the way any distance field does.
 
 ## Where the text lands
 
@@ -149,11 +155,25 @@ _sb.DrawString(_font, "Outline", at, 40f,
     4f);                        // width in world units
 ```
 
-The stroke straddles the glyph's outline rather than sitting outside it, so half of it covers the edge of the fill and the two colors meet with no seam and no gap between them. The outline therefore grows the letter by half the width you asked for, on every side, so a measured box no longer covers the result exactly.
+The band sits outside the glyph, so the two colors meet at the glyph's own edge with no seam and no gap. The outline grows the letter by the full width you asked for, on every side, so a measured box no longer covers the result exactly.
 
-The outline follows the glyph's own curves. It's the same contour the outline was baked from, stroked through the path renderer the shapes use, so it stays smooth at any size and doesn't come out faceted when you zoom in.
+The band follows the glyph's own curves, because it is the field's distance shifted outward rather than a second set of geometry behind the fill. It stays smooth at any size, and it costs almost nothing: an outlined line builds in about the same time as a plain one, where stroking real geometry behind the glyph would cost many times the fill.
 
 The outline takes a `Gradient` as well as a `Color`, and it resolves across the whole string the same way the fill does, so a gradient on the outline runs from the first letter to the last. A width of zero, or a negative one, draws no outline and the outline color goes unread.
+
+## Glow
+
+The same overload takes a glow after the width. It is a world space Gaussian on the same band the outline is, so it replaces the anti-aliasing width rather than adding to it, the way it does on every other shape:
+
+```csharp
+_sb.DrawString(_font, "Glow", at, 40f,
+    new Color(255, 255, 255),   // fill
+    new Color(96, 165, 250),    // outline
+    2f,                         // width in world units
+    6f);                        // glow radius
+```
+
+A glow of zero leaves the plain anti-aliased edge and draws no glow at all. Past about a third of the field's range the glow runs out of distance to read and flattens into a square edge, so a very large one should be built from the blur guide's `DrawString` alternative or a smaller radius.
 
 ## Limits
 
@@ -161,9 +181,9 @@ Only TrueType outlines work. Most `.otf` files describe their glyphs with cubic 
 
 A newline is the only layout this does. There's no wrapping, no alignment, and no ellipsis, since those are decisions and this draws what it's handed. There's no fallback font chain either. A code point the font has no glyph for draws the font's own missing glyph box, so a hole shows up instead of quietly closing. You pick the font per call, so a fallback is a loop you write.
 
-Each scanline through a glyph carries up to 16 curves. Almost nothing reaches that, though a handful of dense characters do. The shade blocks `░ ▒ ▓` (U+2591 to U+2593) are the loud case, since a row through one really does cross more than 16, and they come out with detail missing. Real text isn't affected.
+A glyph's field is baked at 48 texels per em, so text drawn much past that size is magnified and its edge softens. Corners are where a distance field is least exact, and a stroke much thinner than the field's range - a stem a couple of texels wide at a small size - is the classic case a multi-channel field can round away. Both are handled at the sizes games draw text at; a display that magnifies letters heavily wants a larger em.
 
-On KNI's GL backends (WebGL, GLES, and desktop GL) the outlines are stored to within ~0.00003 em rather than exactly. It's a workaround for a bug in `nkast.Wasm.Canvas` that drops float texture uploads. An anti-aliased edge pixel there can land a shade off what the other backends give, which doesn't show at text sizes.
+A glyph is baked once per font and shared by every batch and every draw of it, and the batch keeps a fixed size atlas that recycles the fields you stop drawing, the same way it recycles the curves. A glyph larger than the atlas on its own cannot be placed at all.
 
 ## Coming from FontStashSharp
 

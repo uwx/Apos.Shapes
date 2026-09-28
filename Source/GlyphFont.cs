@@ -73,6 +73,10 @@ namespace Apos.Shapes {
         private readonly Dictionary<int, int> _indices = new();
         private readonly Dictionary<int, BakedGlyph> _glyphs = new();
         private readonly Dictionary<int, BakedGlyph> _byCodePoint = new();
+        // The distance fields, keyed by glyph index the same way, and baked on first use. Kept
+        // apart from _glyphs because a font backs both renderers at once: SVG and the ShapePath
+        // canvas stay on the Slug solve, and a glyph is only ever in the cache it is drawn from.
+        private readonly Dictionary<int, MsdfGlyph> _fields = new();
         private readonly Dictionary<long, int> _kerning = new();
         private readonly List<GlyphCurve> _scratch = new();
         // Where each contour starts in _scratch. Kept beside it so a bake that records its
@@ -144,6 +148,43 @@ namespace Apos.Shapes {
                 if (_glyphs.TryGetValue(glyph, out BakedGlyph? baked)) return baked;
                 baked = Bake(glyph);
                 _glyphs[glyph] = baked;
+                return baked;
+            }
+        }
+
+        // The distance field a code point draws from, or null when this font has no glyph for it
+        // at all. The same missing-glyph rule as LookupOrNull, without baking the Slug form the
+        // text path has no use for.
+        internal MsdfGlyph? FieldLookupOrNull(int codePoint) {
+            int index;
+            lock (_gate) {
+                if (!_indices.TryGetValue(codePoint, out index)) {
+                    unsafe {
+                        index = StbTrueType.stbtt_FindGlyphIndex(_info, codePoint);
+                    }
+                    _indices[codePoint] = index;
+                }
+                if (index == 0) return null;
+            }
+            return Field(index);
+        }
+
+        // The distance field for a font glyph index, baked on first use. The bake runs outside
+        // the lock: it costs milliseconds against the Slug bake's twenty microseconds, and
+        // holding the lock through it would serialise every other thread on this font. The
+        // outline it bakes from is immutable once the Slug bake has produced it, and a second
+        // thread that raced here keeps whichever field got in first.
+        internal MsdfGlyph Field(int glyph) {
+            lock (_gate) {
+                if (_fields.TryGetValue(glyph, out MsdfGlyph? done)) return done;
+            }
+            BakedGlyph source = Glyph(glyph);
+            MsdfGlyph baked = MsdfBake.Bake(
+                glyph, source.Advance, source.Bearing, source.Min, source.Max,
+                source.Contour, source.ContourStarts);
+            lock (_gate) {
+                if (_fields.TryGetValue(glyph, out MsdfGlyph? done)) return done;
+                _fields[glyph] = baked;
                 return baked;
             }
         }

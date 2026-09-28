@@ -8,10 +8,13 @@ using Microsoft.Xna.Framework;
 
 namespace Apos.Shapes {
     /// <summary>
-    /// A font a <see cref="ShapeBatch"/> draws text with. The outlines come straight out of the
-    /// file and the pixel shader solves the coverage of every curve, so a glyph is exact at any
-    /// size. There's no atlas behind it, so nothing has to pick a size up front and nothing goes
-    /// blurry when you zoom in.
+    /// A font a <see cref="ShapeBatch"/> draws text with. Each glyph is baked into a distance field
+    /// at a fixed resolution and placed in an atlas, so a pixel has one signed distance to the
+    /// glyph's outline. Outline, glow and shadow are arithmetic on that one number, which is what
+    /// makes them cheap; the trade is that the field is sampled rather than solved, so text is
+    /// near-exact at the sizes games draw it and softens if magnified far past the bake resolution.
+    /// <see cref="Prewarm(string)"/> bakes ahead so nothing pays for a cold string on the frame it
+    /// first appears.
     ///
     /// A glyph is read out of the file the first time something draws it, so every code point the
     /// font has an outline for works without being asked for in advance. Reading the file is the
@@ -135,6 +138,29 @@ namespace Apos.Shapes {
             return _font.Kerning(l.Glyph, r.Glyph) / (float)UnitsPerEm;
         }
 
+        // The distance field a code point draws from, resolved by the same rule as Resolve: the
+        // primary is asked first, then each fallback, and only a code point no font has a glyph
+        // for comes back null. A fallback's field is baked at its own em and folded in by the
+        // same scale, so the metrics and the field always come from one font.
+        internal MsdfGlyph? ResolveField(int codePoint, out float scale, out GlyphFont? owner) {
+            if (_font.FieldLookupOrNull(codePoint) is { } primary) {
+                scale = 1f;
+                owner = _font;
+                return primary;
+            }
+            for (int i = 0; i < _fallbacks.Count; i++) {
+                GlyphFont font = _fallbacks[i]._font;
+                if (font.FieldLookupOrNull(codePoint) is { } field) {
+                    scale = (float)UnitsPerEm / font.UnitsPerEm;
+                    owner = font;
+                    return field;
+                }
+            }
+            scale = 1f;
+            owner = _font;
+            return null;
+        }
+
         // The glyph a code point draws as, and which font it comes from. The primary is asked
         // first, then each fallback in turn, and the first font with a glyph wins. When nothing
         // has one the primary's missing glyph is the answer, so the text still gets the advance
@@ -209,6 +235,32 @@ namespace Apos.Shapes {
         /// <param name="size">Em size in world units, the same one the text is drawn at.</param>
         public Vector2 MeasureString(string text, float size) {
             return MeasureString(text.AsSpan(), size);
+        }
+
+        /// <summary>
+        /// Bakes the distance field of every glyph in a string, so drawing it later doesn't.
+        /// </summary>
+        /// <remarks>
+        /// A glyph's field is read in the first time something draws it, which for a cold glyph
+        /// costs a fraction of a millisecond. That is free for text that dribbles in, but a whole
+        /// screen of text nothing has drawn yet pays it all at once, on the frame it appears. Call
+        /// this at a load screen, or when a panel is first built, to move the cost off that frame.
+        ///
+        /// The size and the colors the text will be drawn at make no difference: a field is baked
+        /// once per glyph, not per draw. Code points the font has no glyph for are skipped.
+        /// </remarks>
+        /// <param name="text">The text to bake, with newlines treated as in the draw.</param>
+        public void Prewarm(ReadOnlySpan<char> text) {
+            for (int i = 0; i < text.Length;) {
+                int codePoint = CodePointAt(text, i, out int step);
+                i += step;
+                _ = ResolveField(codePoint, out _, out _);
+            }
+        }
+        /// <summary>Bakes the distance fields of every glyph in a string. See the span overload.</summary>
+        /// <param name="text">The text to bake.</param>
+        public void Prewarm(string text) {
+            Prewarm(text.AsSpan());
         }
 
         /// <summary>

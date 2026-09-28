@@ -24,28 +24,32 @@ float2 ramp_texel; // 1 / the ramp table's texel counts: x across a row, y acros
 float2 band_tex_size; // (width, rows) of the glyph band texture in texels.
 float2 band_texel; // 1 / band_tex_size.
 float2 curve_texel; // 1 / the glyph curve texture's texel counts.
+float2 msdf_texel; // 1 / the distance field atlas' texel counts.
 // Sampler order is load bearing, and the register annotations alone do not settle it: the
 // OpenGL and Vulkan translator hands out texture units in the order the pixel shader first
 // SAMPLES from, not the order the samplers are declared or the registers they ask for, while
 // the KNI toolchain goes by the register. So the three have to agree, and that means listing
 // them in the order the pixel shader reaches them: the texture mask returns early, then the
 // first arm of the shape ladder reads a glyph's band headers and then its curve control
-// points, then the elliptical arc length table further down that ladder, then the dither
-// noise, then the ramp table. The dither sits before the ramp because the blur path returns
-// early THROUGH a dither call, ahead of the color section where the ramp reads. Getting this
-// wrong is silent - the shader simply reads a different texture and the picture goes to noise.
+// points, then the distance field an MSDF glyph is sampled from, then the elliptical arc
+// length table further down that ladder, then the dither noise, then the ramp table. The
+// dither sits before the ramp because the blur path returns early THROUGH a dither call,
+// ahead of the color section where the ramp reads. Getting this wrong is silent - the shader
+// simply reads a different texture and the picture goes to noise.
 #if SM6
 // DXC drops the legacy sampler syntax: declare texture/sampler pairs on matching
 // registers so the Vulkan reflection treats them as combined image-samplers.
 Texture2D TextureTex : register(t0); SamplerState TextureSampler : register(s0);
 Texture2D BandTex : register(t1); SamplerState BandSampler : register(s1); // Glyph band headers and curve lists, bound with clamped point sampling.
 Texture2D CurveTex : register(t2); SamplerState CurveSampler : register(s2); // Glyph curve control points, bound with clamped point sampling.
-Texture2D ArcTex : register(t3); SamplerState ArcSampler : register(s3); // Elliptical arc length table, bound with clamped point sampling.
-Texture2D BlueNoiseTex : register(t4); SamplerState BlueNoiseSampler : register(s4); // 64x64 tile, bound with wrapped point sampling.
-Texture2D RampTex : register(t5); SamplerState RampSampler : register(s5); // Ramp weight curves, bound with clamped point sampling.
+Texture2D MsdfTex : register(t3); SamplerState MsdfSampler : register(s3); // Baked glyph distance fields, bound with clamped LINEAR sampling: the bilinear fetch is the field's reconstruction.
+Texture2D ArcTex : register(t4); SamplerState ArcSampler : register(s4); // Elliptical arc length table, bound with clamped point sampling.
+Texture2D BlueNoiseTex : register(t5); SamplerState BlueNoiseSampler : register(s5); // 64x64 tile, bound with wrapped point sampling.
+Texture2D RampTex : register(t6); SamplerState RampSampler : register(s6); // Ramp weight curves, bound with clamped point sampling.
 float4 SampleTexture(float2 uv) { return TextureTex.Sample(TextureSampler, uv); }
 float4 SampleBand(float2 uv) { return BandTex.Sample(BandSampler, uv); }
 float4 SampleCurve(float2 uv) { return CurveTex.Sample(CurveSampler, uv); }
+float4 SampleMsdf(float2 uv) { return MsdfTex.Sample(MsdfSampler, uv); }
 float4 SampleArc(float2 uv) { return ArcTex.Sample(ArcSampler, uv); }
 float4 SampleBlueNoise(float2 uv) { return BlueNoiseTex.Sample(BlueNoiseSampler, uv); }
 float4 SampleRamp(float2 uv) { return RampTex.Sample(RampSampler, uv); }
@@ -53,16 +57,24 @@ float4 SampleRamp(float2 uv) { return RampTex.Sample(RampSampler, uv); }
 sampler TextureSampler : register(s0);
 sampler BandSampler : register(s1); // Glyph band headers and curve lists, bound with clamped point sampling.
 sampler CurveSampler : register(s2); // Glyph curve control points, bound with clamped point sampling.
-sampler ArcSampler : register(s3); // Elliptical arc length table, bound with clamped point sampling.
-sampler BlueNoiseSampler : register(s4); // 64x64 tile, bound with wrapped point sampling.
-sampler RampSampler : register(s5); // Ramp weight curves, bound with clamped point sampling.
+sampler MsdfSampler : register(s3); // Baked glyph distance fields, bound with clamped LINEAR sampling: the bilinear fetch is the field's reconstruction.
+sampler ArcSampler : register(s4); // Elliptical arc length table, bound with clamped point sampling.
+sampler BlueNoiseSampler : register(s5); // 64x64 tile, bound with wrapped point sampling.
+sampler RampSampler : register(s6); // Ramp weight curves, bound with clamped point sampling.
 float4 SampleTexture(float2 uv) { return tex2D(TextureSampler, uv); }
 float4 SampleBand(float2 uv) { return tex2D(BandSampler, uv); }
 float4 SampleCurve(float2 uv) { return tex2D(CurveSampler, uv); }
+float4 SampleMsdf(float2 uv) { return tex2D(MsdfSampler, uv); }
 float4 SampleArc(float2 uv) { return tex2D(ArcSampler, uv); }
 float4 SampleBlueNoise(float2 uv) { return tex2D(BlueNoiseSampler, uv); }
 float4 SampleRamp(float2 uv) { return tex2D(RampSampler, uv); }
 #endif
+// The middle of three values, which is how an MSDF's distance is recovered: neither HLSL nor
+// GLSL has one of its own. The field's reconstruction error peaks at a corner, where the
+// median is what bounds it.
+float Median3(float a, float b, float c) {
+    return max(min(a, b), min(max(a, b), c));
+}
 
 struct VertexInput {
     float4 Position : POSITION0;
@@ -2679,12 +2691,18 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     // An SVG element takes the same arm with the even-odd fill rule instead of nonzero. It is the
     // same curves through the same two loops, so the rule is a second shape id rather than a
     // branch of its own, and it costs one step here and two lerps at the very end.
-    bool isGlyph = shape >= 12.5 && shape < 14.5;
+    bool isSlug = shape >= 12.5 && shape < 14.5;
+    // Text is sampled from a baked distance field instead, which is a signed distance like every
+    // other shape's and so rides the ordinary SDF tail rather than the coverage arm above it.
+    // That is the whole point of the change: a distance is a number the border band can shift and
+    // the blur can convolve, neither of which coverage can offer. Only the two shape ids differ -
+    // 10 for text, 13 and 14 for the SVG and canvas fills that stay on Slug.
+    bool isMsdf = shape >= 9.5 && shape < 10.5;
     float evenOdd = step(13.5, shape);
     float glyphFade = 1.0;
 
     float d = 0.0;
-    if (isGlyph) {
+    if (isSlug) {
         // Glyph coverage, from the Slug algorithm by way of Forme. The two loops are held to
         // what GLSL ES 1.00 Appendix A admits; see MAX_BAND_CURVES above.
         float2 emCoord = q;
@@ -2766,6 +2784,27 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
             abs(px * xwgt + py * ywgt) / max(xwgt + ywgt, 0.0001),
             min(abs(px), abs(py)));
         glyphFade = sqrt(saturate(coverage));
+    } else if (isMsdf) {
+        // A glyph's distance field, baked per glyph and packed into the batch's atlas beside the
+        // Slug tables. TexCoord.xy is the atlas TEXEL coordinate rather than an em coordinate, so
+        // this one multiply is the whole of the fetch.
+        float4 field = SampleMsdf(q * msdf_texel);
+        // The field is the true distance in alpha and the multi-channel reconstruction in rgb.
+        // The blur is the only reader that cares which: a Gaussian kernel amplifies the median's
+        // error, which is largest where the field's three channels disagree at a corner.
+        float sd = Median3(field.r, field.g, field.b);
+        // (0.5 - sd) turns the encoding back into a signed distance in texels, positive outside
+        // because msdfgen's field is inside-positive; the range is how many texels either side of
+        // the outline the field holds. Meta1.z carries one texel's world size, worked out on the
+        // CPU from the em size and the bake's resolution - a derivative of the atlas coordinate
+        // would give the same number but is not reliable inside this branch, and there is nothing
+        // here a derivative would need that the quad does not already know.
+        d = (0.5 - (blurred >= 0.5 ? field.a : sd)) * p.BorderCoord.z * sdfSize;
+        // A text outline is a band OUTSIDE the glyph, and the tail's border band is an inside one
+        // of the same width, so moving the distance outward is what turns the one into the other.
+        // Skipped under a blur: that arm paints the fill over whatever band it is handed, so a
+        // shift there would hollow the glyph out of its own glow instead of ringing it.
+        if (lineSize > 0.0 && blurred < 0.5) d -= lineSize;
     } else if (shape < 0.5) {
         d = CircleSDF(q, sdfSize);
         if (dashType >= 0.5) {
@@ -2974,6 +3013,12 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     // and taking it inside conditional flow is what the ANGLE gradient bug punishes.
     float pixelWidth = PixelWidth(d, footprint, aaBias);
 
+    // A glyph has no edge to measure the fade across, so what a gradient antialiases its stops
+    // over is the pixel's own footprint, arrived at the same way a dash edge's width is. Both
+    // glyph arms read it, and so does the blur below - a text blur's quad is built to this width
+    // and the fade it substitutes for is what the pad has to cover.
+    float aaSize = ((isSlug || isMsdf) ? footprint.y : pixelWidth) * aaPixels;
+
     if (blurred >= 0.5) {
         // A blur is a world space Gaussian, so unlike the AA fade it reaches equally to both
         // sides of the edge and the shape keeps its size instead of growing outward. The floor
@@ -3008,14 +3053,12 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
         return br;
     }
 
-    // A glyph has no edge to measure the fade across, so what a gradient antialiases its stops
-    // over is the pixel's own footprint, arrived at the same way a dash edge's width is.
-    float aaSize = (isGlyph ? footprint.y : pixelWidth) * aaPixels;
-
     // Beyond the outer AA edge every branch below resolves to premultiplied zero, and so does
     // everything a glyph's coverage misses - which is most of its quad, since the outline's box
-    // is padded out to hold the fade.
-    if (isGlyph ? glyphFade <= 0.0 : d >= aaSize * (1.0 - aaBias)) {
+    // is padded out to hold the fade. An MSDF glyph is a distance like any other shape's, so it
+    // takes the ordinary test: past the field's own range the sample saturates to a constant,
+    // and half the range is exactly the point at which the fade below has already reached zero.
+    if (isSlug ? glyphFade <= 0.0 : d >= aaSize * (1.0 - aaBias)) {
         discard;
     }
 
@@ -3046,8 +3089,13 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     // The glyph's own coverage is its fade, and it has no border band for the crossfade to
     // reach: the border slots stand down on a glyph quad (see the ctor in ShapeVertex.cs) and
     // BorderCoord carries the band transform rather than a second gradient's frame.
-    float edgeFade = isGlyph ? glyphFade : 1.0 - smoothstep(0.0, 1.0, saturate(d / aaSize + aaBias));
-    float borderMix = isGlyph ? 0.0 : smoothstep(0.0, 1.0, saturate((d + lineSize) / aaSize + 1.0 - aaBias));
+    //
+    // An MSDF glyph takes the ordinary pair below instead, which is the whole point of it: with
+    // d as its real distance, edgeFade is coverage of the glyph and borderMix crosses over at
+    // d = 0, so the fill's side covers the glyph exactly and the border's side covers the band
+    // from the glyph's edge out to lineSize with no seam between them.
+    float edgeFade = isSlug ? glyphFade : 1.0 - smoothstep(0.0, 1.0, saturate(d / aaSize + aaBias));
+    float borderMix = isSlug ? 0.0 : smoothstep(0.0, 1.0, saturate((d + lineSize) / aaSize + 1.0 - aaBias));
 
     // Closed outlines mask their border band along the perimeter; the gaps show the fill.
     // The AA width comes from the pixel footprint alone, since the cut is already a world
