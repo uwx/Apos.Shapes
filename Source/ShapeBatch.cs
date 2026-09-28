@@ -3321,8 +3321,16 @@ namespace Apos.Shapes {
             // BorderCoord.z the range in texels. See the channel map above PixelInput in
             // apos-shapes.fx. Meta1.x is the outline band's width, which every other shape reads
             // as its border thickness, and Meta1.y is the AA width or, under a glow, the sigma.
+            //
+            // The fade is asked for CENTRED whatever the batch's style is. Text has always been
+            // rasterised by a coverage fade that straddles the edge - Slug solved one - and an
+            // outward band is not the same letter: it puts the whole fade outside the glyph, which
+            // on a 16px stem is most of the stem's own width on either side, so the letters come
+            // out at around twice the ink and with a halo down every straight edge. Unlike a
+            // shape's, a glyph's weight is not the caller's to trade away, so the style is not
+            // consulted here. The glow replaces the width on its own arm and never reads this.
             VertexShape v = new(new Vector3(topLeft, 0), texTopLeft, VertexShape.Shape.MsdfGlyph, fill, outline, outlineWidth, texelWorld, GetClipSpace(topLeft),
-                                aaSize: Aa(aaSize), a: rectW, b: rectH, c: 0f, d: 0f,
+                                aaSize: GlyphAa(aaSize), a: rectW, b: rectH, c: 0f, d: 0f,
                                 colorSpace: ColorSpace, blur: glow, ramps: _ramps);
             v.BorderCoord = new Vector4(emTopLeft.X, emTopLeft.Y, g.RangeTexels, 0f);
             _vertices[_vertexCount + 0] = v;
@@ -4085,6 +4093,13 @@ namespace Apos.Shapes {
         // one carries exactly. A call that passes a negative width asks for the centered band
         // whatever the batch is set to. See the note at the top of SpritePixelShader.
         private float Aa(float aaSize) => AAStyle == AAStyle.Centered ? -MathF.Abs(aaSize) : aaSize;
+
+        // The AA width a glyph quad is created with, and always a centred band whatever the batch's
+        // style is. Static on purpose: it must not be able to read AAStyle, which is the whole
+        // point - a glyph's weight is not the caller's to trade away, and the outward band a shape
+        // wants puts the entire fade outside the letter, which at 16px is most of a stem's width on
+        // either side. See the note in DrawMsdfQuad.
+        internal static float GlyphAa(float aaSize) => -MathF.Abs(aaSize);
 
 #if NFMW
         // MonoGame.Extended's Matrix3x2 spells this CreateRotationZ; System.Numerics' spells it
