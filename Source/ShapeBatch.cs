@@ -3280,32 +3280,31 @@ namespace Apos.Shapes {
             Vector2 center = new(position.X + (g.PaddedMin.X + g.PaddedMax.X) * 0.5f * scale.X,
                                  position.Y - (g.PaddedMin.Y + g.PaddedMax.Y) * 0.5f * scale.Y);
             float halfExtent = (g.PaddedMax - g.PaddedMin).Length() * MathF.Max(worldPerEm.X, worldPerEm.Y) * 0.5f;
-            // The blurs the vertex builder already places grow the quad in world units, so this
-            // only has to cover the field's own range. See the padding below for why it is the
-            // longer side of the range rather than half of it.
+            // A blur's reach and an outline both grow past the field's own box, so the footprint
+            // is taken over what they add as well; _pixelSize is what the AA width is measured
+            // against in the shader.
             UpdatePixelSize(center, halfExtent + glow + MathF.Abs(outlineWidth));
-            Vector2 pixelsPerEm = new(worldPerEm.X / _pixelSize, worldPerEm.Y / _pixelSize);
 
-            // The field holds the distance out to half its range either side of the outline, and
-            // the AA fade reaches a little past the near edge of that. A texel of world size is
-            // range/2 em over EmPx, so the margin is the half range expressed in em, plus the AA
-            // band and the outline the drawn band may reach across. The quad is bigger than it
-            // has to be when the outline is absent, which costs fill rate and cannot change a
-            // pixel, the same trade the Slug quad makes.
-            float halfRangeEm = 0.5f * g.RangeTexels / g.EmPx;
-            float aaEm = MathF.Abs(aaSize) / MathF.Max(MathF.Min(pixelsPerEm.X, pixelsPerEm.Y), 1e-6f);
-            float padEm = MathF.Max(halfRangeEm, MathF.Abs(outlineWidth) / MathF.Max(MathF.Min(worldPerEm.X, worldPerEm.Y), 1e-6f)) + aaEm;
-            Vector2 emMin = new(g.PaddedMin.X - padEm, g.PaddedMin.Y - padEm);
-            Vector2 emMax = new(g.PaddedMax.X + padEm, g.PaddedMax.Y + padEm);
+            // The quad carries one texel per texel of the field, so the em box and the texel rect
+            // have to correspond exactly or the glyph is stretched by however much they differ.
+            // The field's own range already holds everything an AA band or an outline reaches -
+            // that is what the range is sized for - so the quad is the field's box and nothing
+            // more, inset half a texel so its edges land on the outermost texel centres and a
+            // bilinear fetch cannot blend in a neighbouring glyph.
+            float halfTexelEm = 0.5f / g.EmPx;
+            Vector2 emMin = new(g.PaddedMin.X + halfTexelEm, g.PaddedMin.Y + halfTexelEm);
+            Vector2 emMax = new(g.PaddedMax.X - halfTexelEm, g.PaddedMax.Y - halfTexelEm);
 
-            // Each corner's own place in the atlas: the rect's texel edges, in the same order the
-            // em corners go round. A corner samples the rect's edge, which is half a texel past
-            // the outermost texel centre, so the field's own gutter is what keeps the fetch
-            // inside the glyph.
-            var texTopLeft = new Vector2(rectX, rectY);
-            var texTopRight = new Vector2(rectX + rectW, rectY);
-            var texBottomRight = new Vector2(rectX + rectW, rectY + rectH);
-            var texBottomLeft = new Vector2(rectX, rectY + rectH);
+            // Each corner's own place in the atlas, in the same order the em corners go round.
+            //
+            // The field is baked from y up and written out with row 0 at its own min y, so the
+            // rect's first row is the glyph's BOTTOM and its last row the top. Pairing the em
+            // corners the other way round is a vertically mirrored glyph that still reads as a
+            // letter at a glance, so the rows run backwards on purpose.
+            var texTopLeft = new Vector2(rectX + 0.5f, rectY + rectH - 0.5f);
+            var texTopRight = new Vector2(rectX + rectW - 0.5f, rectY + rectH - 0.5f);
+            var texBottomRight = new Vector2(rectX + rectW - 0.5f, rectY + 0.5f);
+            var texBottomLeft = new Vector2(rectX + 0.5f, rectY + 0.5f);
 
             var emTopLeft = new Vector2(emMin.X, emMax.Y);
             var emTopRight = new Vector2(emMax.X, emMax.Y);
