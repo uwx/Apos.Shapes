@@ -3090,12 +3090,18 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     // reach: the border slots stand down on a glyph quad (see the ctor in ShapeVertex.cs) and
     // BorderCoord carries the band transform rather than a second gradient's frame.
     //
-    // An MSDF glyph takes the ordinary pair below instead, which is the whole point of it: with
-    // d as its real distance, edgeFade is coverage of the glyph and borderMix crosses over at
-    // d = 0, so the fill's side covers the glyph exactly and the border's side covers the band
-    // from the glyph's edge out to lineSize with no seam between them.
+    // An MSDF glyph takes the ordinary pair below instead, with d its real distance. An outlined one
+    // differs in one place: a text outline is a stroke of the width the caller named, so borderMix is
+    // its whole coverage and its inner edge is a step rather than a fade. A crossfade would give the
+    // band half a fade on each side, and at an outline no wider than the fade that leaves no solid
+    // core - the pixels its edges land on come out half outline and half fill, which on the counter's
+    // black over white is the mid grey of the background it was drawn to stand against.
+    bool outlinedGlyph = isMsdf && lineSize > 0.0 && blurred < 0.5;
     float edgeFade = isSlug ? glyphFade : 1.0 - smoothstep(0.0, 1.0, saturate(d / aaSize + aaBias));
-    float borderMix = isSlug ? 0.0 : smoothstep(0.0, 1.0, saturate((d + lineSize) / aaSize + 1.0 - aaBias));
+    float borderMix = isSlug ? 0.0
+        : outlinedGlyph
+            ? (d + lineSize >= 0.0 ? 1.0 : 0.0)
+            : smoothstep(0.0, 1.0, saturate((d + lineSize) / aaSize + 1.0 - aaBias));
 
     // Closed outlines mask their border band along the perimeter; the gaps show the fill.
     // The AA width comes from the pixel footprint alone, since the cut is already a world
@@ -3273,7 +3279,14 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     // The edge fade applies after the crossfade so the fill also fades where a dash gap
     // lets it reach the outer edge. Solid borders keep borderMix at 1 wherever the fade
     // is below 1, so the fade still lands on the border alone there.
-    float4 result = lerp(fr, br, borderMix) * edgeFade;
+    //
+    // An outlined glyph instead takes the larger of the two, which paints the band solid where it
+    // covers and the fill solid on the glyph's own side, fading only past the band's outer edge. The
+    // band sits wholly outside the glyph, so there is nothing between the two to blend: they meet
+    // where both are opaque and are switched there.
+    float4 result = outlinedGlyph
+        ? lerp(fr, br, borderMix) * max(edgeFade, borderMix)
+        : lerp(fr, br, borderMix) * edgeFade;
 
     result *= clipAlpha;
     // With premultiplied blending the source color adds straight into the framebuffer, so
