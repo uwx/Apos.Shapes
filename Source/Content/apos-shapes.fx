@@ -2700,6 +2700,10 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     bool isMsdf = shape >= 9.5 && shape < 10.5;
     float evenOdd = step(13.5, shape);
     float glyphFade = 1.0;
+    // The letter's own distance, before the outline grows it. The fade asks what the letter covers,
+    // which is this rather than the grown distance the band is measured against. Zero for every
+    // other shape, whose d is already the one it wants.
+    float dGlyph = 0.0;
 
     float d = 0.0;
     if (isSlug) {
@@ -2786,9 +2790,15 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
         glyphFade = sqrt(saturate(coverage));
     } else if (isMsdf) {
         // A glyph's distance field, baked per glyph and packed into the batch's atlas beside the
-        // Slug tables. TexCoord.xy is the atlas TEXEL coordinate rather than an em coordinate, so
-        // this one multiply is the whole of the fetch.
-        float4 field = SampleMsdf(q * msdf_texel);
+        // Slug tables. TexCoord.xy is the atlas TEXEL coordinate rather than an em coordinate.
+        //
+        // Clamped to the rect's outermost texel centres (Meta2 is its size and origin). Under MSAA
+        // a pixel whose centre is outside the quad but some of whose samples are inside it is still
+        // shaded, at its centre, with TexCoord extrapolated past the quad's edge - so unclamped the
+        // fetch reads the neighbouring glyph's texels, and draws its field as ink.
+        float2 texelLo = p.Meta2.zw + 0.5;
+        float2 texelHi = p.Meta2.zw + p.Meta2.xy - 0.5;
+        float4 field = SampleMsdf(clamp(q, texelLo, texelHi) * msdf_texel);
         // The field is the true distance in alpha and the multi-channel reconstruction in rgb.
         // The blur is the only reader that cares which: a Gaussian kernel amplifies the median's
         // error, which is largest where the field's three channels disagree at a corner.
@@ -2800,11 +2810,14 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
         // would give the same number but is not reliable inside this branch, and there is nothing
         // here a derivative would need that the quad does not already know.
         d = (0.5 - (blurred >= 0.5 ? field.a : sd)) * p.BorderCoord.z * sdfSize;
-        // A text outline is a band OUTSIDE the glyph, and the tail's border band is an inside one
-        // of the same width, so moving the distance outward is what turns the one into the other.
-        // Skipped under a blur: that arm paints the fill over whatever band it is handed, so a
-        // shift there would hollow the glyph out of its own glow instead of ringing it.
-        if (lineSize > 0.0 && blurred < 0.5) d -= lineSize;
+        dGlyph = d;
+        // A text outline is the letter grown by lineSize, read off alpha rather than the median. The
+        // median is only exact near the edge: further out it follows each edge's line past the end
+        // of the edge, so it reads well inside the band where the letter is far away - at every
+        // corner, and elsewhere - and the outline paints specks there. Skipped under a blur: that
+        // arm paints the fill over whatever band it is handed, so a shift there would hollow the
+        // glyph out of its glow.
+        if (lineSize > 0.0 && blurred < 0.5) d = (0.5 - field.a) * p.BorderCoord.z * sdfSize - lineSize;
     } else if (shape < 0.5) {
         d = CircleSDF(q, sdfSize);
         if (dashType >= 0.5) {
@@ -3090,18 +3103,13 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     // reach: the border slots stand down on a glyph quad (see the ctor in ShapeVertex.cs) and
     // BorderCoord carries the band transform rather than a second gradient's frame.
     //
-    // An MSDF glyph takes the ordinary pair below instead, with d its real distance. An outlined one
-    // differs in one place: a text outline is a stroke of the width the caller named, so borderMix is
-    // its whole coverage and its inner edge is a step rather than a fade. A crossfade would give the
-    // band half a fade on each side, and at an outline no wider than the fade that leaves no solid
-    // core - the pixels its edges land on come out half outline and half fill, which on the counter's
-    // black over white is the mid grey of the background it was drawn to stand against.
+    // An outlined glyph is two layers, the letter over the letter grown by the outline, and each has
+    // its own coverage: edgeFade on the letter's distance and bandFade on the grown one. dGlyph is
+    // zero for every other shape, whose d is already the distance the fade wants.
     bool outlinedGlyph = isMsdf && lineSize > 0.0 && blurred < 0.5;
-    float edgeFade = isSlug ? glyphFade : 1.0 - smoothstep(0.0, 1.0, saturate(d / aaSize + aaBias));
-    float borderMix = isSlug ? 0.0
-        : outlinedGlyph
-            ? (d + lineSize >= 0.0 ? 1.0 : 0.0)
-            : smoothstep(0.0, 1.0, saturate((d + lineSize) / aaSize + 1.0 - aaBias));
+    float edgeFade = isSlug ? glyphFade : 1.0 - smoothstep(0.0, 1.0, saturate((isMsdf ? dGlyph : d) / aaSize + aaBias));
+    float bandFade = 1.0 - smoothstep(0.0, 1.0, saturate(d / aaSize + aaBias));
+    float borderMix = isSlug ? 0.0 : smoothstep(0.0, 1.0, saturate((d + lineSize) / aaSize + 1.0 - aaBias));
 
     // Closed outlines mask their border band along the perimeter; the gaps show the fill.
     // The AA width comes from the pixel footprint alone, since the cut is already a world
@@ -3280,12 +3288,10 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     // lets it reach the outer edge. Solid borders keep borderMix at 1 wherever the fade
     // is below 1, so the fade still lands on the border alone there.
     //
-    // An outlined glyph instead takes the larger of the two, which paints the band solid where it
-    // covers and the fill solid on the glyph's own side, fading only past the band's outer edge. The
-    // band sits wholly outside the glyph, so there is nothing between the two to blend: they meet
-    // where both are opaque and are switched there.
+    // An outlined glyph composites its letter over its band instead, both premultiplied, so each
+    // edge keeps its own antialiasing and the band shows through only what the letter leaves.
     float4 result = outlinedGlyph
-        ? lerp(fr, br, borderMix) * max(edgeFade, borderMix)
+        ? fr * edgeFade + br * (bandFade * (1.0 - edgeFade))
         : lerp(fr, br, borderMix) * edgeFade;
 
     result *= clipAlpha;

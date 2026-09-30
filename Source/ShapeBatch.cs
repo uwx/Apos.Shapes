@@ -3316,8 +3316,8 @@ namespace Apos.Shapes {
             Vector2 bottomRight = GlyphCorner(emBottomRight, position, scale, sin, cos);
             Vector2 bottomLeft = GlyphCorner(emBottomLeft, position, scale, sin, cos);
 
-            // The channels carry: TexCoord.xy the atlas texel coordinate, Meta2.xy the rect's
-            // texel size, BorderCoord.xy the corner's em coordinate for the gradient and
+            // The channels carry: TexCoord.xy the atlas texel coordinate, Meta2 the rect's texel
+            // size and origin, BorderCoord.xy the corner's em coordinate for the gradient and
             // BorderCoord.z the range in texels. See the channel map above PixelInput in
             // apos-shapes.fx. Meta1.x is the outline band's width, which every other shape reads
             // as its border thickness, and Meta1.y is the AA width or, under a glow, the sigma.
@@ -3330,7 +3330,7 @@ namespace Apos.Shapes {
             // shape's, a glyph's weight is not the caller's to trade away, so the style is not
             // consulted here. The glow replaces the width on its own arm and never reads this.
             VertexShape v = new(new Vector3(topLeft, 0), texTopLeft, VertexShape.Shape.MsdfGlyph, fill, outline, outlineWidth, texelWorld, GetClipSpace(topLeft),
-                                aaSize: GlyphAa(aaSize), a: rectW, b: rectH, c: 0f, d: 0f,
+                                aaSize: GlyphAa(aaSize), a: rectW, b: rectH, c: rectX, d: rectY,
                                 colorSpace: ColorSpace, blur: glow, ramps: _ramps);
             v.BorderCoord = new Vector4(emTopLeft.X, emTopLeft.Y, g.RangeTexels, 0f);
             _vertices[_vertexCount + 0] = v;
