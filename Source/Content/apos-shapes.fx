@@ -2477,6 +2477,20 @@ float Erf(float x) {
 float GaussianCoverage(float d, float sigma) {
     return 0.5 * (1.0 - Erf(d / (sigma * 1.414213562373095)));
 }
+// A glyph's coverage, and the square root every fill has always been drawn with. A pixel spans one
+// unit along the edge normal, so the coverage is how much of that unit falls inside the letter: a
+// ramp a pixel wide, which is the crossing count the Slug arm solves for and where the letters took
+// their fade from. It is deliberately not aaSize - that is a shape's knob, and a glyph has no say
+// in it, so a wider band here only washes the letter out. A smoothstep over such a band is flat at
+// both ends as well, which is a letter that reads lighter and softer than the font drew it.
+//
+// aaBias is 0.5 for the centred band a glyph always asks for, which is what puts the ramp across
+// the edge; the outward band every other shape asks for would sit it entirely outside. It rides
+// through rather than being folded in so the style stays load-bearing, and it is the same shift
+// the smoothstep below takes, so a glyph matches the fill profile either way.
+float GlyphFade(float d, float pixelWidth, float aaBias) {
+    return sqrt(saturate(1.0 - aaBias - d / max(pixelWidth, 1e-12)));
+}
 
 // Interleaved gradient noise (Jimenez 2014). Screen-space noise with a spectrum close
 // enough to blue noise to dither away gradient banding without a texture. The pattern
@@ -3105,10 +3119,14 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     //
     // An outlined glyph is two layers, the letter over the letter grown by the outline, and each has
     // its own coverage: edgeFade on the letter's distance and bandFade on the grown one. dGlyph is
-    // zero for every other shape, whose d is already the distance the fade wants.
+    // zero for every other shape, whose d is already the distance the fade wants. Both layers take
+    // the glyph's own fade rather than the shape fade on aaSize; see GlyphFade.
     bool outlinedGlyph = isMsdf && lineSize > 0.0 && blurred < 0.5;
-    float edgeFade = isSlug ? glyphFade : 1.0 - smoothstep(0.0, 1.0, saturate((isMsdf ? dGlyph : d) / aaSize + aaBias));
-    float bandFade = 1.0 - smoothstep(0.0, 1.0, saturate(d / aaSize + aaBias));
+    float edgeFade = isSlug ? glyphFade
+                  : (isMsdf ? GlyphFade(dGlyph, pixelWidth, aaBias)
+                            : 1.0 - smoothstep(0.0, 1.0, saturate(d / aaSize + aaBias)));
+    float bandFade = isMsdf ? GlyphFade(d, pixelWidth, aaBias)
+                            : 1.0 - smoothstep(0.0, 1.0, saturate(d / aaSize + aaBias));
     float borderMix = isSlug ? 0.0 : smoothstep(0.0, 1.0, saturate((d + lineSize) / aaSize + 1.0 - aaBias));
 
     // Closed outlines mask their border band along the perimeter; the gaps show the fill.
