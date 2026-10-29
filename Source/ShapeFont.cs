@@ -264,6 +264,44 @@ namespace Apos.Shapes {
         }
 
         /// <summary>
+        /// Loads distance fields that were baked ahead of time, instead of baking them here.
+        /// </summary>
+        /// <remarks>
+        /// Baking a glyph costs milliseconds, and warming a font's Latin-1 range is a couple of
+        /// seconds on the browser, so the build bakes the fields once and ships them. Pass the file
+        /// this font's cache was written from; it is ignored, whole, when it was baked from
+        /// different font bytes, so a replaced font falls back to baking rather than drawing the
+        /// previous version's glyphs.
+        ///
+        /// Anything the file does not cover still bakes on first draw exactly as before, so this is
+        /// an accelerator and never a requirement. Call it before the font draws anything - the
+        /// fields in it are only taken where none has been baked yet.
+        /// </remarks>
+        /// <param name="cache">The bytes of the cache file, or null when there is none.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="cache"/> is null.</exception>
+        public void LoadPrewarmed(byte[] cache) {
+            ArgumentNullException.ThrowIfNull(cache);
+            // Matched on the font's own bytes rather than on the caller's word for which file it
+            // is, so a cache can never be applied to a font it was not baked from.
+            if (MsdfCache.Load(cache, _font.BytesHash) is not { } fields) return;
+            _font.LoadFields(fields);
+        }
+
+        /// <summary>
+        /// Writes this font's prewarmed fields as a cache file, for <see cref="LoadPrewarmed"/>.
+        /// </summary>
+        /// <remarks>
+        /// Written by the build tool rather than by the game: which range a cache holds is a build
+        /// decision, and a game that rewrote its own cache at runtime would be baking once per
+        /// launch instead of once per build.
+        /// </remarks>
+        /// <returns>The file's bytes.</returns>
+        public byte[] SavePrewarmed() => MsdfCache.Save(_font.BytesHash, _font.Fields);
+
+        /// <summary>How many distance fields this font has baked or loaded so far.</summary>
+        public int PrewarmedFieldCount => _font.Fields.Count;
+
+        /// <summary>
         /// Adds a font to try after this one, for the code points this font has no glyph for.
         /// Fallbacks are tried in the order they were added, and one is only consulted once
         /// every font before it has been asked and come back with nothing.

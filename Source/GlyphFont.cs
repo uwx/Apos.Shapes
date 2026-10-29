@@ -27,6 +27,7 @@ namespace Apos.Shapes {
                 throw new ArgumentException("A font needs its file bytes.", nameof(ttf));
             }
             MaxCurves = Math.Clamp(maxCurves, 1, 64);
+            _pinnedBytes = ttf;
             // stb keeps the pointer it is handed rather than copying, so the bytes stay pinned
             // for as long as this font does. A fixed block would only hold them still for the
             // length of the constructor.
@@ -69,10 +70,16 @@ namespace Apos.Shapes {
         }
 
         private readonly GCHandle _pin;
+        private readonly byte[] _pinnedBytes;
+        private ulong? _hash;
         private readonly StbTrueType.stbtt_fontinfo _info;
         private readonly Dictionary<int, int> _indices = new();
         private readonly Dictionary<int, BakedGlyph> _glyphs = new();
         private readonly Dictionary<int, BakedGlyph> _byCodePoint = new();
+        // Every field this font has ever produced or been handed, in the order it arrived. The
+        // build tool reads this back out to write the cache, so it has to see the same fields the
+        // runtime would have baked - which is why LoadFields seeds this rather than a separate map.
+        private readonly List<MsdfGlyph> _fieldOrder = new();
         // The distance fields, keyed by glyph index the same way, and baked on first use. Kept
         // apart from _glyphs because a font backs both renderers at once: SVG and the ShapePath
         // canvas stay on the Slug solve, and a glyph is only ever in the cache it is drawn from.
@@ -185,9 +192,37 @@ namespace Apos.Shapes {
             lock (_gate) {
                 if (_fields.TryGetValue(glyph, out MsdfGlyph? done)) return done;
                 _fields[glyph] = baked;
+                _fieldOrder.Add(baked);
                 return baked;
             }
         }
+
+        // The fields this font has produced or been handed so far, for the build tool that writes
+        // the cache. Every glyph it warms has to come back through here or it is not saved.
+        internal IReadOnlyList<MsdfGlyph> Fields {
+            get {
+                lock (_gate) return _fieldOrder.ToArray();
+            }
+        }
+
+        // Seeds the field cache from a prebaked file. Only fields this font has no entry for are
+        // taken, so a cache can never replace something already baked in this session; a code point
+        // the file has nothing for is left to the lazy bake as usual. The advances come from the
+        // font, not from the file, because the two are the same number and the font is authoritative.
+        internal void LoadFields(IReadOnlyList<MsdfGlyph> glyphs) {
+            lock (_gate) {
+                foreach (MsdfGlyph g in glyphs) {
+                    if (_fields.ContainsKey(g.Glyph)) continue;
+                    _fields[g.Glyph] = g;
+                    _fieldOrder.Add(g);
+                }
+            }
+        }
+
+        // The hash identifying the exact bytes this font was read from, which is what decides
+        // whether a prebaked cache applies to it. Computed from the pinned bytes, so it is the file
+        // as loaded rather than as named.
+        internal ulong BytesHash => _hash ??= MsdfCache.FontHash(_pinnedBytes);
 
         // How much closer the second glyph sits to the first than its advance alone would put
         // it, in design units. Usually zero, and always zero for a font with no kerning.
