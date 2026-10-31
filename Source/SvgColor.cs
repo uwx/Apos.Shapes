@@ -2,7 +2,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 #if !NFMW
 using Microsoft.Xna.Framework;
 #endif

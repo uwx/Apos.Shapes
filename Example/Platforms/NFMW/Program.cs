@@ -32,7 +32,6 @@ using System.Runtime.InteropServices;
 // per-assembly globals and do not travel with the reference - a caller has to name them itself.
 using System.Numerics;
 using Color = Maxine.Extensions.Mathematics.Color;
-using Apos.Shapes;
 using NFMWorld.Graphics;
 using NFMWorld.Graphics.DesktopGL;
 using NFMWorld.Platform.SDL3;

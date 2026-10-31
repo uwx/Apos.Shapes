@@ -1,5 +1,4 @@
 #if NFMW
-using Maxine.Extensions.Mathematics;
 #endif
 
 #if !NFMW

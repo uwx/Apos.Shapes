@@ -25,6 +25,7 @@ float2 band_tex_size; // (width, rows) of the glyph band texture in texels.
 float2 band_texel; // 1 / band_tex_size.
 float2 curve_texel; // 1 / the glyph curve texture's texel counts.
 float2 msdf_texel; // 1 / the distance field atlas' texel counts.
+float pixel_size; // World units per screen pixel, from the CPU. 0 falls back to the derivative.
 // Sampler order is load bearing, and the register annotations alone do not settle it: the
 // OpenGL and Vulkan translator hands out texture units in the order the pixel shader first
 // SAMPLES from, not the order the samplers are declared or the registers they ask for, while
@@ -2629,7 +2630,11 @@ float2 SolveHorizPoly(float4 p12, float2 p3) {
         (a.x * t2 - b.x * 2.0) * t2 + p12.x);
 }
 
-float4 SpritePixelShader(PixelInput p) : SV_TARGET {
+// One pixel shader, compiled once per feature combination: the four flags come in as constants
+// from the entry points at the bottom, so glslang folds them away and each technique ends up with
+// only the code it can reach. The full shader takes minutes to link in a browser, and a batch that
+// draws plain shapes should never pay for the glyph and gradient arms.
+float4 ShapePixel(PixelInput p, bool useDash, bool useFillGradient, bool useBorderGradient, bool useText) {
     float lineSize = p.Meta1.x;
     // A negative width asks for the fade to straddle the true edge instead of sitting outside
     // it, which is what makes a shape cover exactly the pixels its size claims. It rides in the
@@ -2654,10 +2659,25 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     float space = DecodeDigit(meta, 4.0);
     // 0 solid, 1 basic dashes, 2 rounded dashes. Where the pattern rides depends on the shape.
     float dashType = DecodeDigit(meta, 4.0);
+    // A variant without dashes compiles none of that machinery: forcing the type to solid here is
+    // what the compiler folds on, since every dash branch tests this value.
+    if (!useDash) dashType = 0.0;
+    // A style the variant does not carry reads as a flat fill rather than a gradient or palette.
+    if (!useFillGradient) fillStyles.x = 0.0;
+    if (!useBorderGradient) borderStyles.x = 0.0;
     // Set when Meta1.y carries a world space blur instead of a screen space AA width.
     float blurred = meta;
 
-    float2 footprint = PixelFootprint(p.Pos.xy);
+    // The pixel's world-space footprint, which is the AA width everything below is measured in.
+    // The CPU already knows this exactly - it is the same value ShapeBatch expands every quad by -
+    // so it is handed in rather than derived. A derivative of the interpolated position is only
+    // correct for a plane the quad actually lies in, and it is undefined inside non-uniform flow;
+    // WebGL honours neither guarantee here and can report zero, which collapses the fade to a hard
+    // edge on precisely the shapes that need it most. Zero means the caller had no value to give,
+    // and only then is the derivative consulted.
+    float2 footprint = pixel_size > 0.0
+        ? float2(pixel_size, pixel_size)
+        : PixelFootprint(p.Pos.xy);
 
     // Rounded box SDF from the interpolated edge distances.
     float2 clipQ = p.ClipMeta.z - min(p.Pos.zw, p.ClipMeta.xy);
@@ -2705,13 +2725,13 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     // An SVG element takes the same arm with the even-odd fill rule instead of nonzero. It is the
     // same curves through the same two loops, so the rule is a second shape id rather than a
     // branch of its own, and it costs one step here and two lerps at the very end.
-    bool isSlug = shape >= 12.5 && shape < 14.5;
+    bool isSlug = useText && shape >= 12.5 && shape < 14.5;
     // Text is sampled from a baked distance field instead, which is a signed distance like every
     // other shape's and so rides the ordinary SDF tail rather than the coverage arm above it.
     // That is the whole point of the change: a distance is a number the border band can shift and
     // the blur can convolve, neither of which coverage can offer. Only the two shape ids differ -
     // 10 for text, 13 and 14 for the SVG and canvas fills that stay on Slug.
-    bool isMsdf = shape >= 9.5 && shape < 10.5;
+    bool isMsdf = useText && shape >= 9.5 && shape < 10.5;
     float evenOdd = step(13.5, shape);
     float glyphFade = 1.0;
     // The letter's own distance, before the outline grows it. The fade asks what the letter covers,
@@ -3092,12 +3112,12 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     // The packed floats' signs are flags (see the vertex shader): y marks a ramp riding the
     // gradient, z and w carry a ramped stop pair's top row bits. The payloads come back
     // positive before anything unpacks them; x keeps its sign, PaletteColor reads it itself.
-    bool fillRamp = p.Fill.y < -0.5;
-    bool fillZN = p.Fill.z < -0.5;
-    bool fillWN = p.Fill.w < -0.5;
-    bool borderRamp = p.Border.y < -0.5;
-    bool borderZN = p.Border.z < -0.5;
-    bool borderWN = p.Border.w < -0.5;
+    bool fillRamp = useFillGradient && p.Fill.y < -0.5;
+    bool fillZN = useFillGradient && p.Fill.z < -0.5;
+    bool fillWN = useFillGradient && p.Fill.w < -0.5;
+    bool borderRamp = useBorderGradient && p.Border.y < -0.5;
+    bool borderZN = useBorderGradient && p.Border.z < -0.5;
+    bool borderWN = useBorderGradient && p.Border.w < -0.5;
     // The third lane's sign without the ramp flag beside it marks a color ramp; a ramped
     // stop pair only ever sets it with the ramp flag, so the pair can't collide.
     bool fillLut = fillZN && !fillRamp;
@@ -3235,7 +3255,7 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     // A palette's unpacked stops are payload bits, not colors, so it never reads as a
     // transparent fill here, a ramped fill's alpha lanes carry row bits over the alpha, and
     // a color ramp's lanes are all payload, so those skip the shortcut too.
-    bool fillPal = p.Fill.x < -0.5;
+    bool fillPal = useFillGradient && p.Fill.x < -0.5;
     bool borderOnly = !fillPal && !fillRamp && !fillLut && fillA.a == 0.0 && fillB.a == 0.0 && !sameGradient;
     if (borderOnly && borderMix <= 0.0) {
         // Transparent fill: everything inside the border band contributes nothing.
@@ -3277,7 +3297,7 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
         br = fr;
     }
     if (!sameGradient) {
-        bool borderPal = p.Border.x < -0.5;
+        bool borderPal = useBorderGradient && p.Border.x < -0.5;
         float tAa, wrapF;
         float t = Gradient(borderStyles, p.BorderCoord, p.Pos.xy, d, aaSize, p.Meta3.zw, borderPal, borderRamp || borderLut, tAa, wrapF);
         float4 c;
@@ -3321,9 +3341,135 @@ float4 SpritePixelShader(PixelInput p) : SV_TARGET {
     return result;
 }
 
-technique SpriteBatch {
+// One entry point per combination of the four flags, at the index those bits make: dashes in bit
+// 0, fill gradients in bit 1, border gradients in bit 2, text in bit 3. ShapeBatch picks the
+// smallest one that covers what a run draws and compiles it the first time it is used, so a game
+// only ever pays for the versions it actually reaches.
+float4 ShapePixel0(PixelInput p) : SV_TARGET { return ShapePixel(p, false, false, false, false); }
+float4 ShapePixel1(PixelInput p) : SV_TARGET { return ShapePixel(p, true, false, false, false); }
+float4 ShapePixel2(PixelInput p) : SV_TARGET { return ShapePixel(p, false, true, false, false); }
+float4 ShapePixel3(PixelInput p) : SV_TARGET { return ShapePixel(p, true, true, false, false); }
+float4 ShapePixel4(PixelInput p) : SV_TARGET { return ShapePixel(p, false, false, true, false); }
+float4 ShapePixel5(PixelInput p) : SV_TARGET { return ShapePixel(p, true, false, true, false); }
+float4 ShapePixel6(PixelInput p) : SV_TARGET { return ShapePixel(p, false, true, true, false); }
+float4 ShapePixel7(PixelInput p) : SV_TARGET { return ShapePixel(p, true, true, true, false); }
+float4 ShapePixel8(PixelInput p) : SV_TARGET { return ShapePixel(p, false, false, false, true); }
+float4 ShapePixel9(PixelInput p) : SV_TARGET { return ShapePixel(p, true, false, false, true); }
+float4 ShapePixel10(PixelInput p) : SV_TARGET { return ShapePixel(p, false, true, false, true); }
+float4 ShapePixel11(PixelInput p) : SV_TARGET { return ShapePixel(p, true, true, false, true); }
+float4 ShapePixel12(PixelInput p) : SV_TARGET { return ShapePixel(p, false, false, true, true); }
+float4 ShapePixel13(PixelInput p) : SV_TARGET { return ShapePixel(p, true, false, true, true); }
+float4 ShapePixel14(PixelInput p) : SV_TARGET { return ShapePixel(p, false, true, true, true); }
+float4 ShapePixel15(PixelInput p) : SV_TARGET { return ShapePixel(p, true, true, true, true); }
+
+technique Shapes0 {
     pass {
         VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
-        PixelShader = compile PS_SHADERMODEL SpritePixelShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel0();
+    }
+}
+
+technique Shapes1 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel1();
+    }
+}
+
+technique Shapes2 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel2();
+    }
+}
+
+technique Shapes3 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel3();
+    }
+}
+
+technique Shapes4 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel4();
+    }
+}
+
+technique Shapes5 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel5();
+    }
+}
+
+technique Shapes6 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel6();
+    }
+}
+
+technique Shapes7 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel7();
+    }
+}
+
+technique Shapes8 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel8();
+    }
+}
+
+technique Shapes9 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel9();
+    }
+}
+
+technique Shapes10 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel10();
+    }
+}
+
+technique Shapes11 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel11();
+    }
+}
+
+technique Shapes12 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel12();
+    }
+}
+
+technique Shapes13 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel13();
+    }
+}
+
+technique Shapes14 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel14();
+    }
+}
+
+technique Shapes15 {
+    pass {
+        VertexShader = compile VS_SHADERMODEL SpriteVertexShader();
+        PixelShader = compile PS_SHADERMODEL ShapePixel15();
     }
 }

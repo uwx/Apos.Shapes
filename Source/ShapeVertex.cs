@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 #if !NFMW
 using Microsoft.Xna.Framework;
@@ -439,6 +438,31 @@ namespace Apos.Shapes {
             [VertexElementFormat.HalfVector4] = 8,
         };
 #endif
+
+        /// <summary>
+        /// The shader variant this vertex needs, as the bits that pick one of the sixteen
+        /// techniques: dashes, a fill gradient beyond a flat colour, a border gradient of its
+        /// own, and text. Derived from the same fields the shader reads, so it cannot drift
+        /// from what the pixel shader will actually take an arm for.
+        /// </summary>
+        public int FeatureVariant {
+            get {
+                var meta = (int)TextureCoordinate.W;
+                var shape = meta & 15;
+                var fillStyle = meta >> 4 & 15;
+                var borderStyle = meta >> 10 & 15;
+                var dash = meta >> 18 & 3;
+
+                var features = 0;
+                if (dash != 0) features |= 1;
+                if (fillStyle != (int)Gradient.Shape.None) features |= 2;
+                // Any border gradient needs the arm; the shader folds the one-identical-to-fill case
+                // back into reusing the fill's result, so over-selecting here only costs a link.
+                if (borderStyle != (int)Gradient.Shape.None) features |= 4;
+                if (shape == (int)Shape.MsdfGlyph || shape == (int)Shape.Glyph || shape == (int)Shape.EvenOdd) features |= 8;
+                return features;
+            }
+        }
 
         // The shape uses 4 bits, gradient shapes 4 bits each, repeat styles 2 bits each, the color
         // space 2 bits, the dash type 2 bits and the blur flag 1 bit. The total stays under 2^21 so

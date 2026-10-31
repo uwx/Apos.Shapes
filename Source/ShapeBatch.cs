@@ -47,18 +47,38 @@ namespace Apos.Shapes {
             _vertexBuffer = device.CreateBuffer(new BufferDesc(BufferKind.Vertex, BufferUsage.Dynamic, _vertices.Length * VertexStride));
             _indexBuffer = device.CreateBuffer(new BufferDesc(BufferKind.Index, BufferUsage.Dynamic, _indices.Length * sizeof(uint), IndexFormat.UInt32), MemoryMarshal.AsBytes(_indices.AsSpan()));
 
-            var program = apos_shapesSpriteBatch.Create();
-            _shaderModule = device.CreateShaderModule(program.Vertex, program.Pixel, program.Reflection);
-            _pipeline = device.CreatePipeline(new PipelineDesc(
-                VertexShader: _shaderModule,
-                PixelShader: _shaderModule,
+            CreateVariant(0);
+
+            _sampler = device.CreateSampler(new SamplerDesc(TextureFilter.Linear, TextureAddressMode.Clamp, TextureAddressMode.Clamp));
+            _pointClamp = device.CreateSampler(new SamplerDesc(TextureFilter.Point, TextureAddressMode.Clamp, TextureAddressMode.Clamp));
+            _pointWrap = device.CreateSampler(new SamplerDesc(TextureFilter.Point, TextureAddressMode.Wrap, TextureAddressMode.Wrap));
+
+            _blueNoise = BlueNoise.CreateTexture(device);
+
+            if (warmup) {
+                Warmup();
+            }
+        }
+
+        /// <summary>
+        /// Links one feature variant and makes it current. The first call for a variant is what
+        /// costs real time - the driver compiles the pixel shader - so this is only ever reached
+        /// from a draw that actually needs it.
+        /// </summary>
+        private void CreateVariant(int variant) {
+            // Each generated class is its own type, so the per-variant program is built by a small
+            // hand-written factory rather than a cast between them.
+            var (module, parameters) = BuildVariantModule(variant);
+            var pipeline = _device.CreatePipeline(new PipelineDesc(
+                VertexShader: module,
+                PixelShader: module,
                 VertexLayouts: new[] { VertexShape.VertexLayout },
-                // Premultiplied, because that is what this shader emits: SpritePixelShader multiplies
-                // rgb by a before it returns (fr.rgb *= fr.a, br.rgb *= br.a) and then dithers the
-                // already-premultiplied value. The XNA build's default is BlendState.AlphaBlend, and
-                // in XNA that is the premultiplied pair - the trap here is the abstraction's name,
-                // where NonPremultiplied is the straight-alpha one. Using it multiplies by alpha a
-                // second time and washes everything semi-transparent out.
+                // Premultiplied, because that is what this shader emits: the pixel shader multiplies
+                // rgb by a before it returns and then dithers the already-premultiplied value. The
+                // XNA build's default is BlendState.AlphaBlend, and in XNA that is the premultiplied
+                // pair - the trap here is the abstraction's name, where NonPremultiplied is the
+                // straight-alpha one. Using it multiplies by alpha a second time and washes
+                // everything semi-transparent out.
                 //
                 // Spelled out rather than using BlendStateDesc.AlphaBlend, which sets only the color
                 // pair and leaves the alpha pair at One/Zero. XNA's AlphaBlend accumulates the alpha
@@ -75,18 +95,154 @@ namespace Apos.Shapes {
                 // back faces a shape never shows; the abstraction's default culls back faces and
                 // a shape's winding is its own business, so nothing is culled.
                 RasterizerState: new RasterizerStateDesc(CullMode: CullMode.None)));
-            _parameters = program.Bind();
 
-            _sampler = device.CreateSampler(new SamplerDesc(TextureFilter.Linear, TextureAddressMode.Clamp, TextureAddressMode.Clamp));
-            _pointClamp = device.CreateSampler(new SamplerDesc(TextureFilter.Point, TextureAddressMode.Clamp, TextureAddressMode.Clamp));
-            _pointWrap = device.CreateSampler(new SamplerDesc(TextureFilter.Point, TextureAddressMode.Wrap, TextureAddressMode.Wrap));
-
-            _blueNoise = BlueNoise.CreateTexture(device);
-
-            if (warmup) {
-                Warmup();
-            }
+            _variants[variant] = (module, pipeline, parameters);
+            _shaderModule = module;
+            _pipeline = pipeline;
+            _parameters = parameters;
+            _variant = variant;
         }
+
+        /// <summary>
+        /// Builds one variant's module and binds its slots. The generated program types are
+        /// distinct per technique, so each arm here names its own class and hands back the same
+        /// two things; that is the only place the sixteen of them are spelled out.
+        /// </summary>
+        private (IShaderModule Module, VariantParameters Parameters) BuildVariantModule(int variant) {
+            ShaderStageSources vertex, pixel;
+            ShaderReflection reflection;
+
+            switch (variant) {
+                case 0: {
+                    var program = apos_shapesShapes0.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 1: {
+                    var program = apos_shapesShapes1.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 2: {
+                    var program = apos_shapesShapes2.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 3: {
+                    var program = apos_shapesShapes3.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 4: {
+                    var program = apos_shapesShapes4.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 5: {
+                    var program = apos_shapesShapes5.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 6: {
+                    var program = apos_shapesShapes6.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 7: {
+                    var program = apos_shapesShapes7.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 8: {
+                    var program = apos_shapesShapes8.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 9: {
+                    var program = apos_shapesShapes9.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 10: {
+                    var program = apos_shapesShapes10.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 11: {
+                    var program = apos_shapesShapes11.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 12: {
+                    var program = apos_shapesShapes12.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 13: {
+                    var program = apos_shapesShapes13.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                case 14: {
+                    var program = apos_shapesShapes14.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+                default: {
+                    var program = apos_shapesShapes15.Create();
+                    (vertex, pixel, reflection) = (program.Vertex, program.Pixel, program.Reflection);
+                    break;
+                }
+            }
+
+            return (_device.CreateShaderModule(vertex, pixel, reflection), new VariantParameters(reflection));
+        }
+
+        /// <summary>
+        /// Makes sure a variant that can draw <paramref name="features"/> is current, reusing an
+        /// already-linked one instead of compiling a new one wherever possible. The feature bits
+        /// are dashes, fill gradients, border gradients and text, in the order the shader's entry
+        /// points index them.
+        /// </summary>
+        private void SelectVariant(int features) {
+            var pick = Smallest(features);
+            if (pick < 0) {
+                CreateVariant(features);
+                return;
+            }
+            if (pick == _variant) return;
+
+            var chosen = _variants[pick];
+            _shaderModule = chosen.Module;
+            _pipeline = chosen.Pipeline;
+            _parameters = chosen.Parameters;
+            _variant = pick;
+        }
+
+        /// <summary>
+        /// The union of the feature variants of every quad queued since the last flush.
+        ///
+        /// Scanned rather than accumulated per draw: nineteen call sites write vertices, and a
+        /// counter kept beside them would be one edit away from silently disagreeing with the
+        /// buffer. A flush already walks every vertex to upload them, so this is a handful of
+        /// integer ops per quad against the draw it is about to issue.
+        /// </summary>
+        private int RunFeatures() {
+            int features = 0;
+            for (int i = 0; i < _vertexCount; i++) features |= _vertices[i].FeatureVariant;
+            return features;
+        }
+
+        /// <summary>The smallest already-linked variant that covers these features, or -1.</summary>
+        private int Smallest(int features) {
+            var best = -1;
+            foreach (var linked in _variants.Keys) {
+                if ((linked & features) == features && (best < 0 || BitCount(linked) < BitCount(best))) best = linked;
+            }
+            return best;
+        }
+
+        private static int BitCount(int v) => (v & 1) + (v >> 1 & 1) + (v >> 2 & 1) + (v >> 3 & 1);
 #else
         /// <param name="graphicsDevice">The device to draw with.</param>
         /// <param name="effect">
@@ -3751,7 +3907,11 @@ namespace Apos.Shapes {
                 _rampAtlas?.Dispose();
                 _glyphAtlas?.Dispose();
 #if NFMW
-                _pipeline.Dispose();
+                // The module is owned by its pipeline, which is what releases the program.
+                foreach (var variant in _variants.Values) {
+                    variant.Pipeline.Dispose();
+                }
+                _variants.Clear();
                 _sampler.Dispose();
                 _pointClamp.Dispose();
                 _pointWrap.Dispose();
@@ -3810,6 +3970,18 @@ namespace Apos.Shapes {
 
             cb.UpdateBuffer(_vertexBuffer, MemoryMarshal.AsBytes(_vertices.AsSpan(0, _vertexCount)));
 
+            // Pick the shader variant this stretch of quads needs before the pipeline goes up,
+            // since the pipeline is the variant. A run that only needs what an already-compiled
+            // variant covers reuses it; otherwise this is where the first link for a variant
+            // happens, which in a browser is the expensive moment.
+            //
+            // The features are the union over the run, not the first vertex's: a batch is not
+            // homogeneous, and once text is drawn alongside shapes the first vertex is routinely a
+            // shape whose variant lacks the text path. Selecting from it silently dropped every
+            // glyph in the run - and with them their antialiasing - which is why the HUD and the
+            // garage lost their text while a menu, whose runs happen to start on a glyph, kept it.
+            if (_vertexCount > 0) SelectVariant(RunFeatures());
+
             // The pipeline goes up before the first SetUniform, and that ordering is required
             // rather than chosen: uniform storage belongs to the bound pipeline, so GL and sokol
             // both refuse the write outright until one is bound.
@@ -3837,6 +4009,11 @@ namespace Apos.Shapes {
             if (_msdfAtlas?.Texture is { } msdfField) {
                 _parameters.msdf_texel.SetValue(cb, new Vector2(1f / msdfField.Width, 1f / msdfField.Height));
             }
+            // The AA width's world-space unit, worked out here rather than by a derivative in the
+            // shader. A flush can span quads at different depths, so this is the widest footprint
+            // in the run - the conservative choice, since too wide a fade softens rather than
+            // aliases. See the footprint in apos-shapes.fx.
+            _parameters.pixel_size.SetValue(cb, _pixelSize);
 
             cb.SetVertexBuffer(0, _vertexBuffer, VertexStride);
             cb.SetIndexBuffer(_indexBuffer);
@@ -4582,9 +4759,16 @@ namespace Apos.Shapes {
         // which is what Begin/End in isolation does. See Begin(ICommandBuffer, ...).
         private ICommandBuffer? _frameCommandBuffer;
 
-        private readonly IShaderModule _shaderModule;
-        private readonly IPipelineState _pipeline;
-        private readonly apos_shapesSpriteBatchParameters _parameters;
+        private IShaderModule _shaderModule;
+        private IPipelineState _pipeline;
+        private VariantParameters _parameters;
+
+        // Which feature variant the linked program is, and the pipelines built so far. A variant
+        // links the first time a run needs it and then stays; a run needing less than a compiled
+        // variant reuses the smallest one that covers it, so a batch that has drawn text never
+        // pays a second link just to draw a plain rect. See PickVariant.
+        private int _variant;
+        private readonly Dictionary<int, (IShaderModule Module, IPipelineState Pipeline, VariantParameters Parameters)> _variants = new();
         private readonly ISampler _sampler;
         private readonly ISampler _pointClamp;
         private readonly ISampler _pointWrap;
