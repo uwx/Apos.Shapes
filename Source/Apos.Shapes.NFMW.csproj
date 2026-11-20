@@ -31,7 +31,7 @@
 
   <ItemGroup>
     <!-- Reads the glyph outlines the shader solves. -->
-    <PackageReference Include="StbTrueTypeSharp" Version="1.26.12" />
+    <PackageReference Include="StbTrueTypeSharp" Version="1.26.13" />
     <!-- Bakes the distance field the text shader samples; see MsdfBake.cs. -->
     <PackageReference Include="Remora.MSDFGen" Version="2.0.0" />
   </ItemGroup>
@@ -87,7 +87,7 @@
 
   <ItemGroup>
     <SourceRoot Include="$(MSBuildThisFileDirectory)/" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.0.0">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="11.0.100">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
     </PackageReference>
