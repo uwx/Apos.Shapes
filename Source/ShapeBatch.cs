@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 #if NFMW
 using System.Runtime.InteropServices;
 #endif
@@ -529,8 +530,9 @@ namespace Apos.Shapes {
         /// <exception cref="InvalidOperationException"><see cref="End"/> hasn't been called since the last Begin.</exception>
         public void Begin(Matrix? view = null, Matrix? projection = null, BlendState? blendState = null, SamplerState? samplerState = null, DepthStencilState? depthStencilState = null, RasterizerState? rasterizerState = null) {
 #endif
-            if (_beginCalled) {
-                throw new InvalidOperationException("Begin cannot be called again until End has been successfully called.");
+            if (_beginCalled)
+            {
+                ThrowInvalidOperationException("Begin cannot be called again until End has been successfully called.");
             }
             _beginCalled = true;
             _pathOpen = false; // Recover from a path a failed frame left unfinished.
@@ -969,8 +971,9 @@ namespace Apos.Shapes {
         /// <param name="dash">Cuts the stroke into dashes along the spine.</param>
         /// <exception cref="InvalidOperationException">A path is already open.</exception>
         public void BeginPath(float radius, Gradient fill, Gradient border, float thickness = 1f, PathJoin join = PathJoin.Round, PathCap cap = PathCap.Round, PathCap? capEnd = null, float miterLimit = 4f, float aaSize = 1.5f, DashStyle dash = default) {
-            if (_pathOpen) {
-                throw new InvalidOperationException("BeginPath cannot be called again until EndPath has been called.");
+            if (_pathOpen)
+            {
+                ThrowInvalidOperationException("BeginPath cannot be called again until EndPath has been called.");
             }
             _pathOpen = true;
             _pathPointCount = 0;
@@ -1036,8 +1039,9 @@ namespace Apos.Shapes {
             AddPathPoint(point, radius, join);
         }
         private void AddPathPoint(Vector2 point, float radius, PathJoin? join) {
-            if (!_pathOpen) {
-                throw new InvalidOperationException("BeginPath must be called before PathTo.");
+            if (!_pathOpen)
+            {
+                ThrowInvalidOperationException("BeginPath must be called before PathTo.");
             }
             EnsureSizeOrDouble(ref _pathPoints, _pathPointCount + 1);
             EnsureSizeOrDouble(ref _pathRadii, _pathPointCount + 1);
@@ -1059,8 +1063,9 @@ namespace Apos.Shapes {
             EndPathCore(true);
         }
         private void EndPathCore(bool closed) {
-            if (!_pathOpen) {
-                throw new InvalidOperationException("BeginPath must be called before EndPath or ClosePath.");
+            if (!_pathOpen)
+            {
+                ThrowInvalidOperationException("BeginPath must be called before EndPath or ClosePath.");
             }
             _pathOpen = false;
             ReadOnlySpan<float> radii = _pathTapered
@@ -3592,14 +3597,17 @@ namespace Apos.Shapes {
         /// </summary>
         /// <exception cref="InvalidOperationException"><c>Begin</c> was never called, or a path is still open.</exception>
         public void End() {
-            if (!_beginCalled) {
-                throw new InvalidOperationException("Begin must be called before calling End.");
+            if (!_beginCalled)
+            {
+                ThrowInvalidOperationException("Begin must be called before calling End.");
             }
-            if (_pathOpen) {
-                throw new InvalidOperationException("EndPath or ClosePath must be called before calling End.");
+            if (_pathOpen)
+            {
+                ThrowInvalidOperationException("EndPath or ClosePath must be called before calling End.");
             }
-            if (_shapePath != null) {
-                throw new InvalidOperationException("EndShapePath must be called before calling End.");
+            if (_shapePath != null)
+            {
+                ThrowInvalidOperationException("EndShapePath must be called before calling End.");
             }
             _beginCalled = false;
 
@@ -3631,11 +3639,13 @@ namespace Apos.Shapes {
         /// <param name="fillRule">Which side of the outline counts as inside.</param>
         /// <exception cref="InvalidOperationException">Begin was never called, or a path is already open.</exception>
         public void BeginShapePath(FillRule fillRule = FillRule.NonZero) {
-            if (!_beginCalled) {
-                throw new InvalidOperationException("Begin must be called before starting a path.");
+            if (!_beginCalled)
+            {
+                ThrowInvalidOperationException("Begin must be called before starting a path.");
             }
-            if (_shapePath != null) {
-                throw new InvalidOperationException("EndShapePath must be called before starting another path.");
+            if (_shapePath != null)
+            {
+                ThrowInvalidOperationException("EndShapePath must be called before starting another path.");
             }
             _shapePath = new ShapePathBuilder(fillRule, ShapeSvg.DefaultTolerance);
         }
@@ -3796,14 +3806,20 @@ namespace Apos.Shapes {
 
         private ShapePathBuilder OpenShape() {
             if (_shapePath == null) {
-                throw new InvalidOperationException("BeginShapePath must be called before a path command.");
+                ThrowInvalidOperationException("BeginShapePath must be called before a path command.");
             }
             return _shapePath;
         }
 
+        [DoesNotReturn]
+        private static void ThrowInvalidOperationException(string message) {
+            throw new InvalidOperationException(message);
+        }
+
         private ShapePath CurrentShape() {
-            if (_currentShape == null) {
-                throw new InvalidOperationException("EndShapePath must be called before drawing a path.");
+            if (_currentShape == null)
+            {
+                ThrowInvalidOperationException("EndShapePath must be called before drawing a path.");
             }
             return _currentShape;
         }
@@ -3821,8 +3837,9 @@ namespace Apos.Shapes {
                                    PathJoin join = PathJoin.Round, PathCap cap = PathCap.Round, float miterLimit = 4f,
                                    DashStyle dash = default, bool radiusGiven = false) {
             ArgumentNullException.ThrowIfNull(path);
-            if (!_beginCalled) {
-                throw new InvalidOperationException("Begin must be called before drawing.");
+            if (!_beginCalled)
+            {
+                ThrowInvalidOperationException("Begin must be called before drawing.");
             }
             if (path.IsEmpty || (!doFill && !doStroke)) return;
 
@@ -4391,8 +4408,9 @@ namespace Apos.Shapes {
         }
 
         private void PrepareQuad() {
-            if (!_beginCalled) {
-                throw new InvalidOperationException("Begin must be called before drawing.");
+            if (!_beginCalled)
+            {
+                ThrowInvalidOperationException("Begin must be called before drawing.");
             }
             EnsureSizeOrDouble(ref _vertices, _vertexCount + 4);
             _indicesChanged = EnsureSizeOrDouble(ref _indices, _indexCount + 6) || _indicesChanged;
