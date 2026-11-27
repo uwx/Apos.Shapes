@@ -392,7 +392,9 @@ namespace Apos.Shapes {
             /// The same outline solver as <see cref="Glyph"/>, filled by the even-odd rule
             /// instead. This is what an SVG element with <c>fill-rule="evenodd"</c> draws as.
             /// </summary>
-            EvenOdd = 14
+            EvenOdd = 14,
+            /// <summary>A rasterized mesh triangle with interpolated vertex colors.</summary>
+            Mesh = 15
         }
 
 #if !NFMW

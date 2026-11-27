@@ -572,6 +572,37 @@ namespace Apos.Shapes {
             _rasterizerState = rasterizerState ?? RasterizerState.CullCounterClockwise;
 #endif
         }
+        /// <summary>Queues rasterized triangles in the current batch and clip, using straight RGBA vertex colors.</summary>
+        public void FillTriangles(ReadOnlySpan<Vector2> positions, ReadOnlySpan<Color> colors, float alpha = 1f) {
+            if (positions.Length != colors.Length || positions.Length % 3 != 0)
+                throw new ArgumentException("Triangle positions and colors must have equal lengths divisible by three.");
+
+            for (int i = 0; i < positions.Length; i += 3) {
+                PrepareQuad();
+                for (int j = 0; j < 3; j++) {
+                    Vector2 position = positions[i + j];
+                    ClipSpace clip = GetClipSpace(position);
+                    Vector4 color = colors[i + j].ToVector4();
+                    color.W *= alpha;
+                    // The batch's fixed quad indices are 0,1,3 / 1,2,3. Repeating
+                    // vertex 1 in slot 2 makes the second triangle degenerate.
+                    int slot = j == 2 ? 3 : j;
+                    _vertices[_vertexCount + slot] = new VertexShape {
+                        Position = new Vector3(position, 0f),
+                        TextureCoordinate = new Vector4(0f, 0f, 0f, (float)VertexShape.Shape.Mesh),
+                        FillCoord = color,
+                        ClipDistances = clip.Distances,
+                        ClipRounding = clip.Rounding,
+                        ClipAaSize = clip.AaSize
+                    };
+                }
+                _vertices[_vertexCount + 2] = _vertices[_vertexCount + 1];
+                _triangleCount += 2;
+                _vertexCount += 4;
+                _indexCount += 6;
+            }
+        }
+
         /// <summary>Draws a circle with both a fill and a border.</summary>
         /// <param name="center">Center of the circle.</param>
         /// <param name="radius">Radius of the circle in world units.</param>

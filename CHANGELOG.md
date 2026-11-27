@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ### Added
 
+- `ShapeBatch.FillTriangles` batches colored triangle meshes with the current clip and blend state.
 - `ShapePath`: a shape built from canvas style path commands (`MoveTo`, `LineTo`, `QuadTo`, `CubicTo`, `ArcTo`, `Close`, `MarkHole`), filled by the glyph solver and stroked through the path renderer. Build one with `ShapeBatch.ShapePath()` or `BeginShapePath`, and draw it with `FillShape`, `StrokeShape` or `DrawShape`. It takes a `FillRule` of `NonZero` or `EvenOdd`.
 - Outlined text: a `DrawString` overload taking an outline color and a width, which draws a band outside each glyph. The band is a shift of the glyph's distance field rather than geometry behind the fill, so the two colors meet at the glyph's edge with no seam and an outlined line builds in about the same time as a plain one. It goes into the same batch as everything else.
 - Glow on text: the same overload takes a glow radius after the width, a world space Gaussian on the outline's band. Before this it was silently a no-op, since a glyph carried no distance for the blur to read.

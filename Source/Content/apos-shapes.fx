@@ -2688,6 +2688,14 @@ float4 ShapePixel(PixelInput p, bool useDash, bool useFillGradient, bool useBord
     }
     float clipAlpha = 1.0 - smoothstep(0.0, 1.0, saturate(clipD / clipAa + aaBias));
 
+    // Mesh colors are carried unpacked in FillCoord so the rasterizer can interpolate
+    // each component; the regular packed gradient colors cannot be interpolated.
+    if (shape >= 14.5) {
+        float4 color = p.FillCoord;
+        color.rgb *= color.a;
+        return color * clipAlpha;
+    }
+
     if (shape >= 8.5 && shape < 9.5) {
         return SampleTexture(p.TexCoord.xy) * UnpackColor(p.Fill.xy) * clipAlpha;
     }
